@@ -9,7 +9,11 @@
 import { neon } from '@neondatabase/serverless'
 import { requireDatabaseUrl } from './env.mjs'
 
-const sql = neon(requireDatabaseUrl())
+// --print emits the SQL and stops, without needing a connection string at all.
+// Vercel marks integration variables as sensitive, so their values cannot be
+// pulled to a laptop; this lets the schema be pasted into the Neon SQL editor
+// instead. Same statements either way - there is no second copy to drift.
+const printOnly = process.argv.includes('--print')
 
 const steps = [
   [
@@ -94,6 +98,17 @@ const steps = [
   ['checks by site', `CREATE INDEX IF NOT EXISTS checks_site_idx ON checks (site_id, source, created_at DESC)`],
   ['checks by verdict', `CREATE INDEX IF NOT EXISTS checks_verdict_idx ON checks (site_id, source, verdict)`],
 ]
+
+if (printOnly) {
+  console.log('-- labelvalidation schema. Safe to run repeatedly.')
+  for (const [name, ddl] of steps) {
+    const flat = ddl.split(`\n    `).join(`\n`)
+    console.log(`\n-- ${name}\n${flat};`)
+  }
+  process.exit(0)
+}
+
+const sql = neon(requireDatabaseUrl())
 
 for (const [name, ddl] of steps) {
   // sql.query(), not sql(): as of @neondatabase/serverless v1 the returned

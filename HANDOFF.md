@@ -172,6 +172,8 @@ Verified in this repo:
 - `npm run build` — clean, all routes correctly dynamic
 - `npm test` — 79 logic tests pass
 - `npx tsc --noEmit` — clean
+- 37 further checks against the live Neon database, end to end through the
+  HTTP routes — see the section below
 
 Built:
 
@@ -192,47 +194,66 @@ Built:
 
 ---
 
-## State: what is NOT done
+## The database, and what running it proved
 
-**Untested against a live database.** No Neon instance existed while building.
-Everything DB-shaped is unexercised: the migration, the unique-violation path,
-the conflict message, both `unnest` bulk inserts, the `ON CONFLICT DO UPDATE`
-upserts in `bin_map` and `checks`, and the reconcile queries. The SQL is
-straightforward but *none of it has run*. First real task:
+A Neon instance now exists — the `labelpg` store on the `npwcompanies` Vercel
+project, `neondb` on an `ep-dark-frog-…-pooler` host. `npm run migrate` has run
+against it: 13 statements, all applied, and a second run was a no-op, so it is
+genuinely idempotent.
 
-```bash
-npm run migrate
-npm run user -- admin <password> admin
-npm run dev
+Every constraint the design depends on is in place and was read back out of
+`pg_constraint` to be sure:
+
+```
+bin_map   bin_map_pkey         PRIMARY KEY (site_id, old_bin)
+checks    checks_old_unique    UNIQUE (site_id, source, old_bin)
+labels    labels_site_id_code_key  UNIQUE (site_id, code)
+pairs     pairs_new_unique     UNIQUE (site_id, new_bin)
+pairs     pairs_old_unique     UNIQUE (site_id, old_bin)
 ```
 
-then:
+`pairs_new_unique` and `pairs_old_unique` matter by *name*: `/api/pairs` reads
+`e.constraint` to decide which of the two conflicts it is looking at. Rename
+either and the 409 message silently starts describing the wrong bin.
 
-1. create a site, generate labels from a small list, scan a few pairs;
-2. force a conflict by scanning the same old bin twice — from two browsers at
-   once, ideally, since that is the behaviour the whole design rests on;
-3. upload a small two-column sheet on the Validate tab and check the row count
-   that comes back, then re-upload it to confirm `replace` really replaces;
-4. scan a match, a mismatch and a bin that is not in the map, and confirm the
-   three verdicts and the tallies;
-5. re-scan a mismatch correctly and confirm the verdict is replaced, not added.
+The whole path was then exercised end to end against that database — 37 checks,
+all passing. Worth knowing what is now proven rather than assumed:
 
-Watch particularly for a bulk insert that repeats a key inside one statement —
-Postgres rejects that outright. `/api/map` collapses repeats before inserting,
-which is the part most worth confirming on real data.
+- both `unnest` bulk inserts, including a chunk containing the same old bin
+  twice, which Postgres rejects outright unless the repeats are collapsed
+  first — `/api/map` does collapse them, and last one wins
+- both unique-violation paths, returning the right bin and the right person:
+  `A-1-1-1 is already paired to A0101C01 (scanned by admin).` and
+  `A0101C01 is already used by A-1-1-1 (scanned by admin).`
+- the format gate, which refuses a malformed new label *even when the client
+  asks it not to*
+- the `ON CONFLICT DO UPDATE` upserts: re-auditing a fixed shelf flipped its
+  verdict from mismatch to match and left the total at three, rather than
+  accumulating a fourth row
+- audits against the map and against the pairs keeping separate tallies
+- deleting a pair freeing both bins for reuse
+- the reconcile queries, and a 19 KB workbook out of the export
 
-One bug of exactly this kind has already been found and fixed without a
-database: `scripts/migrate.mjs` called `sql(ddl)`, and as of
-`@neondatabase/serverless` v1 the function returned by `neon()` is
-tagged-template only — it throws on a plain string. Every DDL statement would
-have failed before touching Postgres. It now calls `sql.query(ddl)`. Assume
-there are more like it.
+Two bugs were found and fixed on the way, both sitting in the first lines of
+database code anyone executes: `sql(ddl)` (the driver is tagged-template only
+since v1) and `dotenv/config` reading `.env` while the README says `.env.local`.
+
+## State: what is NOT done
+
+**Production cannot sign anyone in.** The deployed app reaches the database
+fine — it resolves `LABELPG_DATABASE_URL` and queries happily — but
+`SESSION_SECRET` is not reaching the runtime, so a correct password returns
+`500 SESSION_SECRET is not set` while a wrong one correctly returns 401. The
+variable is listed for Production and the serving deployment is newer than it,
+so the value is most likely empty. Re-add it in the dashboard and redeploy;
+env changes only reach *new* deployments.
+
+**Nothing has been tested with two people scanning at once.** The constraints
+make the race impossible in principle and the conflict path is proven, but the
+actual simultaneous case — two scan guns, one shelf — has not been staged.
 
 **Also missing:**
 
-- Not yet published to the shared repository under `NPW-Companies/`. There is
-  no git remote on this clone and the `gh` CLI is not installed on this
-  machine, so it needs either `gh` or a repo URL to push to.
 - No manual-range UI. `generateLabels` supports `mode: 'manual'` (zones, aisle
   and column ranges, shelf count) and it is tested, but the Labels tab only
   exposes the derive path. Wiring it up is a small form.
