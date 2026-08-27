@@ -37,6 +37,12 @@ export async function GET(req: Request) {
 /**
  * Record one pair.
  *
+ * The new-bin format is a hard gate here and not a preference: a
+ * cross-reference is only worth anything if every code in it is a real code,
+ * and a mis-scan that lands in this table has to be hunted down by hand later.
+ * The client cannot turn it off - `enforceFormat` is accepted for the location
+ * check only.
+ *
  * The uniqueness checks are left to the database rather than a read-then-write
  * in application code: with several people scanning at once, a check-first
  * approach has a race between the check and the insert. A unique violation
@@ -50,7 +56,6 @@ export async function POST(req: Request) {
       oldBin?: string
       newBin?: string
       location?: string | null
-      enforceFormat?: boolean
       loc?: { zone: string; aisle: number; col: number | null } | null
     }
     const siteId = Number(body.siteId)
@@ -59,7 +64,7 @@ export async function POST(req: Request) {
     if (!siteId) return json({ error: 'site is required' }, 400)
 
     const why = validatePair(oldBin, newBin, {
-      enforceFormat: body.enforceFormat !== false,
+      enforceFormat: true,
       location: body.loc ?? null,
     })
     if (why) return json({ error: why }, 422)

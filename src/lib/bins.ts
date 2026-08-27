@@ -150,7 +150,7 @@ export function validatePair(
   if (!oldBin || !newBin) return 'Both fields are needed.'
   if (oldBin === newBin) return 'Old and new are identical - same label scanned twice?'
   if (opts.enforceFormat && !NEW_PATTERN.test(newBin))
-    return `${newBin} is not a valid new bin (expected like A0102C01).`
+    return `Incorrect format on the new label: ${newBin}. Expected a code like A0101F01 - zone letter, two-digit aisle, two-digit column, shelf letter, then 01. Scan it again.`
   const loc = opts.location
   if (loc && NEW_PATTERN.test(newBin)) {
     const n = splitNew(newBin)!
@@ -160,4 +160,111 @@ export function validatePair(
       return `${newBin} is column ${n.col}, but you are at column ${loc.col}.`
   }
   return null
+}
+
+/* ------------------------------------------------------------------
+ * Bin map — an existing old→new mapping, used as the reference to
+ * audit against rather than as something to trust. The whole point of
+ * validation mode is that the map may be wrong: site 18 shipped 364
+ * bad codes and six zone-E shelves labelled with zone-K codes.
+ * ------------------------------------------------------------------ */
+
+export type MapRow = { oldBin: string; newBin: string }
+
+export type MapParse = {
+  rows: MapRow[]
+  /** true when row 1 was read as a header and dropped. */
+  header: boolean
+  skipped: Array<{ row: number; why: string }>
+  /** Old bins listed more than once — the last one wins. */
+  dupOld: string[]
+  /** One new code claimed by several old bins. This is the E/K collision. */
+  dupNew: Array<{ newBin: string; oldBins: string[] }>
+  /** Kept, but the new code is not in {Zone}{aisle}{col}{letter}01 shape. */
+  badNew: string[]
+}
+
+const HEADER_WORDS = /old|new|bin|label|code|from|to/i
+
+/**
+ * Column A is the old bin, column B is the new bin. Anything past B is
+ * ignored, so a wider export can be handed over untouched.
+ */
+export function parseMapTable(table: Array<Array<string | number | null | undefined>>): MapParse {
+  const cell = (v: unknown) => String(v ?? '').trim().toUpperCase()
+  const rows: MapRow[] = []
+  const skipped: MapParse['skipped'] = []
+  const badNew: string[] = []
+
+  let start = 0
+  let header = false
+  const first = table[0]
+  if (first) {
+    const a = cell(first[0])
+    const b = cell(first[1])
+    const looksLikeData = parseOld(a) !== null || NEW_PATTERN.test(b)
+    if (!looksLikeData && (HEADER_WORDS.test(a) || HEADER_WORDS.test(b))) {
+      header = true
+      start = 1
+    }
+  }
+
+  for (let i = start; i < table.length; i++) {
+    const a = cell(table[i]?.[0])
+    const b = cell(table[i]?.[1])
+    if (!a && !b) continue // blank filler row
+    const n = i + 1 // 1-based, as the spreadsheet shows it
+    if (!a) {
+      skipped.push({ row: n, why: `no old bin (column A) beside ${b}` })
+      continue
+    }
+    if (!b) {
+      skipped.push({ row: n, why: `no new bin (column B) beside ${a}` })
+      continue
+    }
+    if (a === b) {
+      skipped.push({ row: n, why: `${a} is mapped to itself` })
+      continue
+    }
+    if (!NEW_PATTERN.test(b)) badNew.push(b)
+    rows.push({ oldBin: a, newBin: b })
+  }
+
+  const seenOld = new Set<string>()
+  const dupOld: string[] = []
+  const byNew = new Map<string, string[]>()
+  for (const r of rows) {
+    if (seenOld.has(r.oldBin)) dupOld.push(r.oldBin)
+    else seenOld.add(r.oldBin)
+    const list = byNew.get(r.newBin)
+    if (list) list.push(r.oldBin)
+    else byNew.set(r.newBin, [r.oldBin])
+  }
+  const dupNew = [...byNew.entries()]
+    .filter(([, olds]) => new Set(olds).size > 1)
+    .map(([newBin, oldBins]) => ({ newBin, oldBins: [...new Set(oldBins)] }))
+
+  return { rows, header, skipped, dupOld: [...new Set(dupOld)], dupNew, badNew: [...new Set(badNew)] }
+}
+
+/* ---------------- validation (audit) ---------------- */
+
+export type Verdict = 'match' | 'mismatch' | 'unmapped'
+
+/**
+ * What the shelf says versus what the reference says it should say.
+ * `unmapped` is not a pass: the old bin is not in the reference at all,
+ * which is how site 18 lost 17 bins holding 1,145 units.
+ */
+export function verdictFor(scannedNew: string, expected: string | null | undefined): Verdict {
+  const got = String(scannedNew ?? '').trim().toUpperCase()
+  const want = String(expected ?? '').trim().toUpperCase()
+  if (!want) return 'unmapped'
+  return want === got ? 'match' : 'mismatch'
+}
+
+export function verdictText(v: Verdict, scanned: string, expected: string | null): string {
+  if (v === 'match') return `MATCH — ${scanned}`
+  if (v === 'mismatch') return `MISMATCH — hung ${scanned}, should be ${expected}`
+  return `NOT IN THE REFERENCE — nothing says what this bin should be`
 }

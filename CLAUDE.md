@@ -9,7 +9,7 @@ the design decisions and, most importantly, what is not yet done.
 
 ```bash
 npm run dev        # local
-npm test           # 37 logic tests, no DB needed
+npm test           # 67 logic tests, no DB needed
 npm run build      # must stay clean
 npm run migrate    # schema, safe to re-run
 npm run user -- <name> <password> [scanner|admin]
@@ -26,6 +26,10 @@ npm run user -- <name> <password> [scanner|admin]
 - `src/lib/db.ts` stays a lazy plain function. No `Proxy` wrapper, or DB
   introspection breaks. No top-level `neon()` call, or `next build` fails
   before the integration provisions `DATABASE_URL`.
+- **Validation mode records reality, it never refuses.** `/api/checks` writes
+  whatever was scanned with a verdict of `match`, `mismatch` or `unmapped`. A
+  wrong label has to be recorded before anyone can go and fix it. Do not add
+  refusals there — that is what `pairs` is for.
 - Scanner input must never be cached. Routes are `force-dynamic`.
 - Refusals happen client-side for speed **and** server-side for truth. Keep
   both in step; `validatePair` in `src/lib/bins.ts` is shared by each.
@@ -35,5 +39,11 @@ npm run user -- <name> <password> [scanner|admin]
 - Bin codes are uppercased at every boundary.
 - Old bins come in two formats (`A-1-1-1` and `A010101`) plus padding variants.
   Use `parseOld`; do not write another regex.
+- An uploaded bin map is reference data, never truth. It lives in `bin_map`,
+  separate from `pairs`, because a scanned pair is something two people watched
+  happen and an uploaded row is a vendor's claim. Site 18's claim was wrong 364
+  times.
+- Spreadsheets are read in the browser (`src/lib/sheet.ts`, native
+  `DecompressionStream`), then posted as rows. Do not add a server-side unzip.
 - Add a test in `scripts/test.ts` for anything touching parsing, generation or
   validation.

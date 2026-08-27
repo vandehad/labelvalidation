@@ -2,8 +2,18 @@
  * Logic tests that need no database.
  *   node --experimental-strip-types scripts/test.ts
  */
-import { parseOld, generateLabels, validatePair, newCode, splitNew, NEW_PATTERN } from '../src/lib/bins.ts'
+import {
+  parseOld,
+  generateLabels,
+  validatePair,
+  newCode,
+  splitNew,
+  NEW_PATTERN,
+  parseMapTable,
+  verdictFor,
+} from '../src/lib/bins.ts'
 import { makeXlsx } from '../src/lib/xlsx.ts'
+import { parseDelimited, readXlsxRows } from '../src/lib/sheet.ts'
 import { writeFileSync, unlinkSync } from 'node:fs'
 
 let pass = 0
@@ -68,12 +78,62 @@ const loc = { zone: 'A', aisle: 1, col: null }
 ok('valid pair', validatePair('A-1-1-1', 'A0101C01', { enforceFormat: true, location: loc }) === null)
 ok('identical refused', !!validatePair('A0101C01', 'A0101C01', { enforceFormat: true, location: loc }))
 ok('malformed refused', !!validatePair('A-1-1-1', 'GARBAGE', { enforceFormat: true, location: loc }))
+ok(
+  'format refusal names the shape it wants',
+  String(validatePair('A-1-1-1', 'GARBAGE', { enforceFormat: true, location: loc })).includes('A0101F01'),
+)
 ok('malformed allowed when off', validatePair('A-1-1-1', 'GARBAGE', { enforceFormat: false, location: null }) === null)
 ok('wrong zone refused', !!validatePair('A-1-1-1', 'B0101C01', { enforceFormat: true, location: loc }))
 ok('wrong aisle refused', !!validatePair('A-1-1-1', 'A0201C01', { enforceFormat: true, location: loc }))
 ok('wrong column refused', !!validatePair('A-1-1-1', 'A0102C01', { enforceFormat: true, location: { zone: 'A', aisle: 1, col: 1 } }))
 ok('column free when null', validatePair('A-1-1-1', 'A0109C01', { enforceFormat: true, location: loc }) === null)
 ok('empty refused', !!validatePair('', 'A0101C01', { enforceFormat: true, location: loc }))
+
+/* ---------- uploaded bin map ---------- */
+const mp = parseMapTable([
+  ['OLD BIN', 'NEW BIN'],
+  ['A-1-1-1', 'A0101E01'],
+  ['a-1-1-2', 'a0101d01'],
+  ['A010103', 'A0101C01', 'ignored third column'],
+  ['', 'A0101B01'],
+  ['A-1-1-5', ''],
+  [null, null],
+  ['A-1-1-6', 'A-1-1-6'],
+  ['A-1-1-1', 'A0101Z01'],
+  ['A-1-2-1', 'A0101E01'],
+  ['A-1-3-1', 'JUNK'],
+])
+ok('map header dropped', mp.header === true)
+ok('map rows kept', mp.rows.length === 6)
+ok('map uppercases', mp.rows[1].oldBin === 'A-1-1-2' && mp.rows[1].newBin === 'A0101D01')
+ok('map ignores column C', mp.rows[2].newBin === 'A0101C01')
+ok('map skips missing old', mp.skipped.some(x => x.why.includes('no old bin')))
+ok('map skips missing new', mp.skipped.some(x => x.why.includes('no new bin')))
+ok('map skips self-mapping', mp.skipped.some(x => x.why.includes('mapped to itself')))
+ok('map ignores blank rows', mp.skipped.length === 3)
+ok('map flags repeated old bin', mp.dupOld.length === 1 && mp.dupOld[0] === 'A-1-1-1')
+ok('map flags reused new code', mp.dupNew.length === 1 && mp.dupNew[0].newBin === 'A0101E01')
+ok('map names the colliding bins', mp.dupNew[0].oldBins.join(',') === 'A-1-1-1,A-1-2-1')
+ok('map flags wrong-shaped code', mp.badNew.length === 1 && mp.badNew[0] === 'JUNK')
+
+const noHeader = parseMapTable([['A-1-1-1', 'A0101E01'], ['A-1-1-2', 'A0101D01']])
+ok('map without a header keeps row 1', noHeader.header === false && noHeader.rows.length === 2)
+const oddHeader = parseMapTable([['FROM', 'TO'], ['A-1-1-1', 'A0101E01']])
+ok('map header need not say bin', oddHeader.header === true && oddHeader.rows.length === 1)
+ok('map of nothing is empty', parseMapTable([]).rows.length === 0)
+
+/* ---------- validation verdicts ---------- */
+ok('verdict match', verdictFor('A0101E01', 'A0101E01') === 'match')
+ok('verdict match ignores case and space', verdictFor(' a0101e01 ', 'A0101E01') === 'match')
+ok('verdict mismatch', verdictFor('A0101D01', 'A0101E01') === 'mismatch')
+ok('verdict unmapped when no reference', verdictFor('A0101E01', null) === 'unmapped')
+ok('verdict unmapped on empty reference', verdictFor('A0101E01', '') === 'unmapped')
+
+/* ---------- pasted / csv input ---------- */
+ok('csv two columns', JSON.stringify(parseDelimited('A-1-1-1,A0101E01')) === JSON.stringify([['A-1-1-1', 'A0101E01']]))
+ok('csv keeps quoted commas', parseDelimited('"a,b",A0101E01')[0][0] === 'a,b')
+ok('tsv detected', parseDelimited('A-1-1-1\tA0101E01\nA-1-1-2\tA0101D01').length === 2)
+ok('blank lines dropped', parseDelimited('A-1-1-1,A0101E01\n\n\nA-1-1-2,A0101D01').length === 2)
 
 /* ---------- xlsx ---------- */
 const rows: Array<Array<string | number | null>> = [['OLD BIN', 'NEW BIN', 'QTY', 'NOTE']]
@@ -87,6 +147,15 @@ ok('xlsx non-trivial size', bytes.length > 5000)
 writeFileSync('_test.xlsx', bytes)
 ok('xlsx written to disk', true)
 try { unlinkSync('_test.xlsx') } catch { /* leave it */ }
+
+// The reader lifted from the standalone build, checked against our own writer.
+const back = await readXlsxRows(bytes)
+ok('xlsx reads back the header', back[0][0] === 'OLD BIN' && back[0][1] === 'NEW BIN')
+ok('xlsx reads back every row', back.length === rows.length)
+ok('xlsx reads back a value', back[1][0] === 'A-1-1-2')
+ok('xlsx unescapes markup', back.some(r => r[3] === 'quote " & <tag>'))
+const mapped = parseMapTable(back)
+ok('a written workbook parses as a bin map', mapped.header === true && mapped.rows.length === 200)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

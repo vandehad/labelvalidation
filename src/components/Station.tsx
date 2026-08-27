@@ -1,7 +1,16 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { validatePair, NEW_PATTERN, type Basis, type ZMode } from '@/lib/bins'
+import {
+  validatePair,
+  parseMapTable,
+  NEW_PATTERN,
+  type Basis,
+  type ZMode,
+  type MapParse,
+  type Verdict,
+} from '@/lib/bins'
+import { readTable, parseDelimited } from '@/lib/sheet'
 
 type User = { name: string; role: string }
 type Site = { id: number; name: string; status: string; labels: number; pairs: number }
@@ -14,12 +23,53 @@ type Pair = {
   created_at: string
 }
 type Loc = { zone: string; aisle: number; col: number | null }
+type Source = 'map' | 'pairs'
+type Check = {
+  id: number
+  old_bin: string
+  new_bin: string
+  expected_bin: string | null
+  verdict: Verdict
+  username: string | null
+  created_at: string
+}
 
 const api = async (url: string, init?: RequestInit) => {
   const r = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) } })
   const body = await r.json().catch(() => ({}))
   if (!r.ok) throw new Error(body.error || `Request failed (${r.status})`)
   return body
+}
+
+/**
+ * Scanner feedback has to be audible: nobody on a floor is looking at the
+ * screen while their hands are on a scan gun. High and short means good,
+ * low and long means stop.
+ */
+function useBeep(on: boolean) {
+  const actx = useRef<AudioContext | null>(null)
+  return useCallback(
+    (good: boolean) => {
+      if (!on) return
+      try {
+        actx.current ??= new AudioContext()
+        const a = actx.current
+        const o = a.createOscillator()
+        const g = a.createGain()
+        o.connect(g)
+        g.connect(a.destination)
+        o.frequency.value = good ? 1180 : 220
+        o.type = good ? 'sine' : 'square'
+        g.gain.setValueAtTime(0.14, a.currentTime)
+        g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + (good ? 0.11 : 0.42))
+        o.start()
+        o.stop(a.currentTime + (good ? 0.12 : 0.45))
+      } catch {
+        /* no audio device */
+      }
+    },
+    [on],
+  )
 }
 
 export default function Station({ initialUser }: { initialUser: User | null }) {
@@ -75,7 +125,7 @@ function Login({ onIn }: { onIn: (u: User) => void }) {
 /* ------------------------------------------------------------------ */
 
 function Main({ user, onOut }: { user: User; onOut: () => void }) {
-  const [tab, setTab] = useState<'scan' | 'labels' | 'rec'>('scan')
+  const [tab, setTab] = useState<'scan' | 'val' | 'labels' | 'rec'>('scan')
   const [sites, setSites] = useState<Site[]>([])
   const [siteId, setSiteId] = useState<number | null>(null)
   const [err, setErr] = useState('')
@@ -149,6 +199,9 @@ function Main({ user, onOut }: { user: User; onOut: () => void }) {
         <button className={tab === 'scan' ? 'on' : ''} onClick={() => setTab('scan')}>
           Scan &amp; Pair
         </button>
+        <button className={tab === 'val' ? 'on' : ''} onClick={() => setTab('val')}>
+          Validate
+        </button>
         <button className={tab === 'labels' ? 'on' : ''} onClick={() => setTab('labels')}>
           Labels
         </button>
@@ -168,6 +221,8 @@ function Main({ user, onOut }: { user: User; onOut: () => void }) {
           </div>
         ) : tab === 'scan' ? (
           <Scan siteId={siteId} user={user} />
+        ) : tab === 'val' ? (
+          <Validate siteId={siteId} siteName={sites.find(s => s.id === siteId)?.name ?? ''} user={user} />
         ) : tab === 'labels' ? (
           <Labels siteId={siteId} user={user} onDone={loadSites} />
         ) : (
@@ -191,36 +246,12 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
   const [pairs, setPairs] = useState<Pair[]>([])
   const [totals, setTotals] = useState<{ pairs: number; labels: number }>({ pairs: 0, labels: 0 })
   const [byUser, setByUser] = useState<Array<{ username: string; n: number }>>([])
-  const [enforceFmt, setEnforceFmt] = useState(true)
   const [enforceLoc, setEnforceLoc] = useState(true)
   const [sound, setSound] = useState(true)
   const [busy, setBusy] = useState(false)
   const oldRef = useRef<HTMLInputElement>(null)
   const newRef = useRef<HTMLInputElement>(null)
-  const actx = useRef<AudioContext | null>(null)
-
-  const beep = useCallback(
-    (good: boolean) => {
-      if (!sound) return
-      try {
-        actx.current ??= new AudioContext()
-        const a = actx.current
-        const o = a.createOscillator()
-        const g = a.createGain()
-        o.connect(g)
-        g.connect(a.destination)
-        o.frequency.value = good ? 1180 : 220
-        o.type = good ? 'sine' : 'square'
-        g.gain.setValueAtTime(0.14, a.currentTime)
-        g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + (good ? 0.11 : 0.42))
-        o.start()
-        o.stop(a.currentTime + (good ? 0.12 : 0.45))
-      } catch {
-        /* no audio device */
-      }
-    },
-    [sound],
-  )
+  const beep = useBeep(sound)
 
   const refresh = useCallback(async () => {
     try {
@@ -260,7 +291,8 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
     const n = newBin.trim().toUpperCase()
     if (!o || !n) return
     // Check locally first so an obvious mistake never costs a round trip.
-    const why = validatePair(o, n, { enforceFormat: enforceFmt, location: enforceLoc ? loc : null })
+    // The format gate is not optional - the server enforces it either way.
+    const why = validatePair(o, n, { enforceFormat: true, location: enforceLoc ? loc : null })
     if (why) {
       flash('bad', why)
       beep(false)
@@ -276,7 +308,6 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
           oldBin: o,
           newBin: n,
           location: locText || null,
-          enforceFormat: enforceFmt,
           loc: enforceLoc ? loc : null,
         }),
       })
@@ -352,7 +383,10 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
 
       <div className="card">
         <h2>Scan pair</h2>
-        <p className="hint">Scan the OLD label, then the NEW one. Enter moves along and saves.</p>
+        <p className="hint">
+          Scan the OLD label, then the NEW one. Enter moves along and saves. A new label that is not shaped
+          like <code>A0101F01</code> is refused outright — it cannot be saved into the cross-reference.
+        </p>
         {msg && <div className={`msg show ${msg.kind}`}>{msg.text}</div>}
         <div className="scanwrap">
           <div className={`scanfield ${oldBin ? 'armed' : ''}`}>
@@ -382,7 +416,6 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
           </div>
         </div>
         <div className="row" style={{ marginTop: 12 }}>
-          <Toggle label="Enforce format" v={enforceFmt} set={setEnforceFmt} />
           <Toggle label="Must match location" v={enforceLoc} set={setEnforceLoc} />
           <Toggle label="Sound" v={sound} set={setSound} />
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
@@ -697,6 +730,518 @@ function Reconcile({ siteId }: { siteId: number }) {
           </div>
         </>
       )}
+    </>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * Validation mode - audit labels that are already hung.
+ *
+ * Pairing builds the mapping; this checks one that already exists. Scan the
+ * old label, scan the new one, and the answer is match, mismatch, or the bin
+ * is not in the reference at all. Nothing is refused: a wrong label has to be
+ * recorded before anyone can go and fix it.
+ *
+ * The reference is either an uploaded worksheet or the pairs already scanned
+ * in on this site, so an audit can run against a vendor file or against the
+ * app's own work.
+ */
+function Validate({ siteId, siteName, user }: { siteId: number; siteName: string; user: User }) {
+  const [source, setSource] = useState<Source>('map')
+  const [counts, setCounts] = useState({ match: 0, mismatch: 0, unmapped: 0, checked: 0, reference: 0 })
+  const [checks, setChecks] = useState<Check[]>([])
+  const [byUser, setByUser] = useState<Array<{ username: string; n: number }>>([])
+  const [dupNew, setDupNew] = useState<Array<{ new_bin: string; old_bins: string[] }>>([])
+
+  const [oldBin, setOldBin] = useState('')
+  const [newBin, setNewBin] = useState('')
+  const [msg, setMsg] = useState<{ kind: string; text: string; sub?: string } | null>(null)
+  const [sound, setSound] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  const [table, setTable] = useState<string[][] | null>(null)
+  const [preview, setPreview] = useState<MapParse | null>(null)
+  const [fileName, setFileName] = useState('')
+  const [paste, setPaste] = useState('')
+  const [loading, setLoading] = useState('')
+  const [upErr, setUpErr] = useState('')
+
+  const oldRef = useRef<HTMLInputElement>(null)
+  const newRef = useRef<HTMLInputElement>(null)
+  const beep = useBeep(sound)
+
+  const refresh = useCallback(async () => {
+    try {
+      const d = await api(`/api/checks?site=${siteId}&source=${source}&limit=200`)
+      setChecks(d.checks)
+      setCounts(d.counts)
+      setByUser(d.byUser)
+    } catch {
+      /* transient - the poll will retry */
+    }
+    if (source === 'map') {
+      try {
+        const m = await api(`/api/map?site=${siteId}`)
+        setDupNew(m.dupNew ?? [])
+      } catch {
+        /* same */
+      }
+    } else setDupNew([])
+  }, [siteId, source])
+
+  useEffect(() => {
+    void refresh()
+    const t = setInterval(refresh, 10000)
+    return () => clearInterval(t)
+  }, [refresh])
+
+  const flash = (kind: string, text: string, sub?: string) => {
+    setMsg({ kind, text, sub })
+  }
+
+  /* ---------- upload ---------- */
+
+  const take = (rows: string[][], name: string) => {
+    setUpErr('')
+    setFileName(name)
+    setTable(rows)
+    setPreview(parseMapTable(rows))
+  }
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    if (!f) return
+    setUpErr('')
+    setLoading('Reading the file…')
+    try {
+      take(await readTable(f), f.name)
+    } catch (err) {
+      setUpErr(err instanceof Error ? err.message : String(err))
+      setTable(null)
+      setPreview(null)
+    } finally {
+      setLoading('')
+      e.target.value = '' // so the same file can be picked again
+    }
+  }
+
+  const onPaste = () => {
+    let rows = parseDelimited(paste)
+    // Two columns separated by spaces is what you get pasting out of Excel
+    // into some editors, so fall back to any whitespace.
+    if (rows.length && rows.every(r => r.length === 1)) {
+      rows = rows.map(r => String(r[0]).trim().split(/\s+/))
+    }
+    if (!rows.length) return setUpErr('Nothing to read in that paste.')
+    take(rows, 'pasted')
+  }
+
+  const load = async () => {
+    if (!table) return
+    setUpErr('')
+    const CHUNK = 4000
+    try {
+      let stored = 0
+      for (let i = 0; i < table.length; i += CHUNK) {
+        setLoading(`Loading ${Math.min(i + CHUNK, table.length).toLocaleString()} of ${table.length.toLocaleString()}…`)
+        const r = await api('/api/map', {
+          method: 'POST',
+          body: JSON.stringify({ siteId, rows: table.slice(i, i + CHUNK), replace: i === 0, rowOffset: i }),
+        })
+        stored = r.total
+      }
+      setTable(null)
+      setPreview(null)
+      setPaste('')
+      setFileName('')
+      flash('ok', `Bin map loaded — ${stored.toLocaleString()} rows for ${siteName}.`)
+      await refresh()
+    } catch (err) {
+      setUpErr(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading('')
+    }
+  }
+
+  const clearMap = async () => {
+    if (!confirm(`Remove the whole bin map for ${siteName}? Audit results are kept.`)) return
+    try {
+      await api(`/api/map?site=${siteId}`, { method: 'DELETE' })
+      await refresh()
+      flash('warn', 'Bin map cleared.')
+    } catch (err) {
+      setUpErr(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  /* ---------- scanning ---------- */
+
+  const commit = async () => {
+    const o = oldBin.trim().toUpperCase()
+    const n = newBin.trim().toUpperCase()
+    if (!o || !n) return
+    if (o === n) {
+      flash('bad', 'Old and new are identical — same label scanned twice?')
+      beep(false)
+      newRef.current?.select()
+      return
+    }
+    setBusy(true)
+    try {
+      const r = await api('/api/checks', {
+        method: 'POST',
+        body: JSON.stringify({ siteId, source, oldBin: o, newBin: n }),
+      })
+      const v = r.verdict as Verdict
+      const also = r.belongsTo ? `${n} belongs to ${r.belongsTo} in the reference.` : undefined
+      if (v === 'match') {
+        flash('ok', `MATCH — ${o} → ${n}`, also)
+        beep(true)
+      } else if (v === 'mismatch') {
+        flash('bad', `MISMATCH — ${o} has ${n} hung, should be ${r.expected}`, also)
+        beep(false)
+      } else {
+        flash('warn', `${o} is not in the reference — nothing says what it should be.`, also)
+        beep(false)
+      }
+      setChecks(c => [r.check, ...c.filter(x => x.old_bin !== o)])
+      await refresh()
+      setOldBin('')
+      setNewBin('')
+      oldRef.current?.focus()
+    } catch (err) {
+      flash('bad', err instanceof Error ? err.message : String(err))
+      beep(false)
+      newRef.current?.select()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const undo = async () => {
+    const mine = checks.find(c => user.role === 'admin' || c.username === user.name)
+    if (!mine) return flash('warn', 'Nothing of yours to undo.')
+    try {
+      await api(`/api/checks/${mine.id}`, { method: 'DELETE' })
+      setChecks(c => c.filter(x => x.id !== mine.id))
+      await refresh()
+      flash('warn', `Removed the check on ${mine.old_bin}.`)
+      oldRef.current?.focus()
+    } catch (err) {
+      flash('bad', err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const key = (e: React.KeyboardEvent<HTMLInputElement>, from: 'old' | 'new') => {
+    if (e.key !== 'Enter' && e.key !== 'Tab') return
+    e.preventDefault()
+    if (from === 'old') {
+      if (oldBin.trim()) newRef.current?.focus()
+    } else if (newBin.trim()) void commit()
+    else oldRef.current?.focus()
+  }
+
+  const isAdmin = user.role === 'admin'
+  const todo = Math.max(0, counts.reference - counts.checked)
+
+  return (
+    <>
+      <div className="card">
+        <h2>What to audit against</h2>
+        <p className="hint">
+          Validation compares the label that is physically hung against a reference. It never refuses a scan —
+          the point is to record what is on the shelf, right or wrong.
+        </p>
+        <div className="row">
+          <div style={{ flex: '1 1 340px' }}>
+            <label>Reference</label>
+            <select value={source} onChange={e => setSource(e.target.value as Source)}>
+              <option value="map">Uploaded bin map</option>
+              <option value="pairs">Bins scanned in on this site (Scan &amp; Pair)</option>
+            </select>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+            <span className="loc">
+              {counts.reference.toLocaleString()} reference row{counts.reference === 1 ? '' : 's'} for {siteName}
+            </span>
+          </div>
+        </div>
+        {source === 'pairs' && !counts.reference && (
+          <div className="msg show warn">
+            Nothing has been scanned in on this site yet, so every check would come back as not-in-the-reference.
+            Upload a bin map instead, or capture some pairs first.
+          </div>
+        )}
+        {dupNew.length > 0 && (
+          <div className="msg show warn">
+            {dupNew.length} new code{dupNew.length === 1 ? ' is' : 's are'} claimed by more than one old bin in the
+            uploaded map — that is a fault in the map itself, not in the labels:{' '}
+            {dupNew.slice(0, 4).map(d => `${d.new_bin} (${d.old_bins.join(', ')})`).join('; ')}
+          </div>
+        )}
+      </div>
+
+      {source === 'map' && (
+        <div className="card">
+          <h2>Bin map for {siteName}</h2>
+          <p className="hint">
+            Pick the site above first — the map is loaded against whichever site is selected. The worksheet needs
+            two columns in this order; anything past column B is ignored, and a header row is detected and skipped.
+          </p>
+          <div className="scroll" style={{ maxHeight: 180, marginBottom: 12 }}>
+            <table>
+              <thead>
+                <tr>
+                  <th style={{ width: 40 }}></th>
+                  <th>A</th>
+                  <th>B</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style={{ color: 'var(--muted)' }}>1</td>
+                  <td>
+                    <b>OLD BIN</b>
+                  </td>
+                  <td>
+                    <b>NEW BIN</b>
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ color: 'var(--muted)' }}>2</td>
+                  <td>A-1-1-1</td>
+                  <td>A0101E01</td>
+                </tr>
+                <tr>
+                  <td style={{ color: 'var(--muted)' }}>3</td>
+                  <td>A010102</td>
+                  <td>A0101D01</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {upErr && <div className="msg show bad">{upErr}</div>}
+          {loading && <div className="msg show warn">{loading}</div>}
+
+          {!isAdmin ? (
+            <p className="hint">An admin loads the bin map. You can audit against whatever is loaded.</p>
+          ) : (
+            <>
+              <div className="row">
+                <div style={{ flex: '1 1 320px' }}>
+                  <label>Upload .xlsx or .csv</label>
+                  <input type="file" accept=".xlsx,.xlsm,.csv,.tsv,.txt" onChange={onFile} />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+                  <button className="act ghost" onClick={clearMap} disabled={!!loading}>
+                    Clear map
+                  </button>
+                </div>
+              </div>
+              <label style={{ marginTop: 10 }}>…or paste two columns</label>
+              <textarea
+                value={paste}
+                onChange={e => setPaste(e.target.value)}
+                placeholder={'A-1-1-1\tA0101E01\nA-1-1-2\tA0101D01'}
+                style={{ minHeight: 90 }}
+              />
+              <div className="btns" style={{ marginTop: 8 }}>
+                <button className="act ghost" onClick={onPaste} disabled={!paste.trim() || !!loading}>
+                  Read the paste
+                </button>
+              </div>
+            </>
+          )}
+
+          {preview && (
+            <>
+              <div className="stats" style={{ marginTop: 14 }}>
+                <Stat n={preview.rows.length.toLocaleString()} l="rows to load" />
+                <Stat n={preview.skipped.length} l="unusable rows" />
+                <Stat n={preview.dupOld.length} l="repeated old bins" />
+                <Stat n={preview.dupNew.length} l="new codes reused" />
+                <Stat n={preview.badNew.length} l="wrong-shaped codes" />
+              </div>
+              {preview.header && <p className="hint">Row 1 was read as a header and will be skipped.</p>}
+              {preview.dupNew.length > 0 && (
+                <div className="msg show warn">
+                  {preview.dupNew.length} new code(s) appear against more than one old bin — the collision that put
+                  zone-K labels on zone-E shelves at site 18. Check:{' '}
+                  {preview.dupNew.slice(0, 4).map(d => `${d.newBin} (${d.oldBins.join(', ')})`).join('; ')}
+                </div>
+              )}
+              {preview.badNew.length > 0 && (
+                <div className="msg show warn">
+                  {preview.badNew.length} code(s) are not shaped like a new bin, e.g. {preview.badNew.slice(0, 5).join(', ')}
+                </div>
+              )}
+              {preview.skipped.length > 0 && (
+                <div className="msg show warn">
+                  {preview.skipped.length} row(s) cannot be used: {preview.skipped.slice(0, 3).map(s => `row ${s.row}, ${s.why}`).join('; ')}
+                </div>
+              )}
+              <div className="scroll" style={{ maxHeight: 200, marginTop: 10 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>OLD BIN</th>
+                      <th>NEW BIN</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.rows.slice(0, 8).map((r, i) => (
+                      <tr key={i}>
+                        <td>{r.oldBin}</td>
+                        <td>{r.newBin}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="btns" style={{ marginTop: 10 }}>
+                <button className="act" onClick={load} disabled={!!loading || !preview.rows.length}>
+                  {loading ? 'Loading…' : `Load ${preview.rows.length.toLocaleString()} rows into ${siteName}`}
+                </button>
+                <button
+                  className="act ghost"
+                  onClick={() => {
+                    setTable(null)
+                    setPreview(null)
+                    setFileName('')
+                  }}
+                >
+                  Discard {fileName ? `"${fileName}"` : 'this'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      <div className="card">
+        <h2>Validate a bin</h2>
+        <p className="hint">Scan the OLD label on the shelf, then the NEW one hung beside it. Enter moves along and checks.</p>
+        {msg && (
+          <div className={`msg show ${msg.kind}`}>
+            {msg.text}
+            {msg.sub && (
+              <div style={{ fontWeight: 400, marginTop: 4, fontSize: 13 }}>{msg.sub}</div>
+            )}
+          </div>
+        )}
+        <div className="scanwrap">
+          <div className={`scanfield ${oldBin ? 'armed' : ''}`}>
+            <label>1 · Old bin</label>
+            <input
+              ref={oldRef}
+              value={oldBin}
+              onChange={e => setOldBin(e.target.value)}
+              onKeyDown={e => key(e, 'old')}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="scan…"
+              autoFocus
+            />
+          </div>
+          <div className={`scanfield ${newBin ? 'armed' : ''}`}>
+            <label>2 · Label hung on it</label>
+            <input
+              ref={newRef}
+              value={newBin}
+              onChange={e => setNewBin(e.target.value)}
+              onKeyDown={e => key(e, 'new')}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="scan…"
+            />
+          </div>
+        </div>
+        <div className="row" style={{ marginTop: 12 }}>
+          <Toggle label="Sound" v={sound} set={setSound} />
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+            <button className="act ghost" onClick={undo} disabled={busy}>
+              Undo last
+            </button>
+            <button
+              className="act ghost"
+              onClick={() => {
+                setOldBin('')
+                setNewBin('')
+                oldRef.current?.focus()
+              }}
+            >
+              Clear
+            </button>
+            <a className="act ghost" href={`/api/export?site=${siteId}`} style={{ textDecoration: 'none' }}>
+              Export workbook (.xlsx)
+            </a>
+            {busy && <span className="spin" />}
+          </div>
+        </div>
+      </div>
+
+      <div className="stats">
+        <Stat n={counts.checked.toLocaleString()} l="bins audited" />
+        <Stat n={counts.match.toLocaleString()} l="match" />
+        <Stat n={counts.mismatch.toLocaleString()} l="MISMATCH" />
+        <Stat n={counts.unmapped.toLocaleString()} l="not in reference" />
+        <Stat n={todo.toLocaleString()} l="left to check" />
+        <Stat n={counts.checked > 0 && counts.mismatch + counts.unmapped === 0 ? 'CLEAN' : 'CHECK'} l="so far" />
+      </div>
+
+      {byUser.length > 1 && (
+        <div className="peer">
+          {byUser.map(b => (
+            <span key={b.username}>
+              {b.username} <b>{b.n}</b>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="card">
+        <h2>Audited — everyone</h2>
+        <div className="scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>OLD BIN</th>
+                <th>LABEL HUNG</th>
+                <th>SHOULD BE</th>
+                <th>VERDICT</th>
+                <th>BY</th>
+                <th>TIME</th>
+              </tr>
+            </thead>
+            <tbody>
+              {checks.map(c => (
+                <tr key={c.id} className={c.verdict === 'mismatch' ? 'dupe' : ''}>
+                  <td>{c.old_bin}</td>
+                  <td>{c.new_bin}</td>
+                  <td>{c.expected_bin ?? '—'}</td>
+                  <td>
+                    <span className={`pill ${c.verdict === 'match' ? 'ok' : c.verdict === 'mismatch' ? 'bad' : 'warn'}`}>
+                      {c.verdict === 'unmapped' ? 'NOT IN REFERENCE' : c.verdict.toUpperCase()}
+                    </span>
+                  </td>
+                  <td>{c.username ?? '—'}</td>
+                  <td>{new Date(c.created_at).toLocaleTimeString()}</td>
+                </tr>
+              ))}
+              {!checks.length && (
+                <tr>
+                  <td colSpan={6} style={{ color: 'var(--muted)' }}>
+                    Nothing audited yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </>
   )
 }

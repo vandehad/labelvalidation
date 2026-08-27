@@ -7,7 +7,11 @@ export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-/** Full workbook: cross-reference, unused (to delete), unexpected, summary. */
+/**
+ * Full workbook: cross-reference, unused (to delete), unexpected, summary,
+ * plus the uploaded bin map and the validation audit when either exists.
+ * Sheets with nothing in them are left out rather than shipped empty.
+ */
 export async function GET(req: Request) {
   try {
     await requireUser()
@@ -19,7 +23,7 @@ export async function GET(req: Request) {
     const site = (await sql`SELECT name FROM sites WHERE id = ${siteId}`) as Array<{ name: string }>
     if (!site.length) return json({ error: 'No such site.' }, 404)
 
-    const [pairs, unused, unexpected] = (await Promise.all([
+    const [pairs, unused, unexpected, binMap, checks] = (await Promise.all([
       sql`SELECT p.old_bin, p.new_bin, p.location, u.username, p.created_at
           FROM pairs p LEFT JOIN users u ON u.id = p.user_id
           WHERE p.site_id = ${siteId} ORDER BY p.new_bin`,
@@ -32,44 +36,68 @@ export async function GET(req: Request) {
           WHERE p.site_id = ${siteId}
             AND NOT EXISTS (SELECT 1 FROM labels l WHERE l.site_id = p.site_id AND l.code = p.new_bin)
           ORDER BY p.new_bin`,
+      sql`SELECT old_bin, new_bin FROM bin_map WHERE site_id = ${siteId}
+          ORDER BY row_no NULLS LAST, old_bin`,
+      sql`SELECT c.source, c.old_bin, c.new_bin, c.expected_bin, c.verdict, u.username, c.created_at
+          FROM checks c LEFT JOIN users u ON u.id = c.user_id
+          WHERE c.site_id = ${siteId}
+          ORDER BY c.verdict, c.old_bin`,
     ])) as [
       Array<{ old_bin: string; new_bin: string; location: string | null; username: string | null; created_at: string }>,
       Array<{ code: string; zone: string; aisle: number; col: number; letter: string }>,
       Array<{ new_bin: string; old_bin: string; username: string | null }>,
+      Array<{ old_bin: string; new_bin: string }>,
+      Array<{
+        source: string
+        old_bin: string
+        new_bin: string
+        expected_bin: string | null
+        verdict: string
+        username: string | null
+        created_at: string
+      }>,
     ]
 
     const labelCount = (await sql`SELECT count(*)::int AS n FROM labels WHERE site_id = ${siteId}`) as Array<{ n: number }>
     const used = labelCount[0].n - unused.length
     const oneForOne = unexpected.length === 0 && pairs.length === used
 
+    const at = (t: string) => String(t).replace('T', ' ').slice(0, 19)
+    const bad = checks.filter(c => c.verdict !== 'match')
+    const nMatch = checks.length - bad.length
+    const nMismatch = checks.filter(c => c.verdict === 'mismatch').length
+    const nUnmapped = checks.filter(c => c.verdict === 'unmapped').length
+
+    const summary: Array<Array<string | number | null>> = [
+      ['MEASURE', 'VALUE'],
+      ['site', site[0].name],
+      ['labels generated', labelCount[0].n],
+      ['labels used', used],
+      ['labels unused - delete these', unused.length],
+      ['pairs captured', pairs.length],
+      ['scanned but not in label set', unexpected.length],
+      ['one-for-one', oneForOne ? 'YES' : 'NO'],
+    ]
+    if (binMap.length || checks.length) {
+      summary.push(
+        ['bin map rows loaded', binMap.length],
+        ['bins audited', checks.length],
+        ['audit - match', nMatch],
+        ['audit - MISMATCH', nMismatch],
+        ['audit - not in reference', nUnmapped],
+        ['audit clean', checks.length > 0 && bad.length === 0 ? 'YES' : 'NO'],
+      )
+    }
+    summary.push(['exported', new Date().toISOString().replace('T', ' ').slice(0, 19)])
+
     const sheets: Sheet[] = [
-      {
-        name: 'SUMMARY',
-        widths: [34, 16],
-        rows: [
-          ['MEASURE', 'VALUE'],
-          ['site', site[0].name],
-          ['labels generated', labelCount[0].n],
-          ['labels used', used],
-          ['labels unused - delete these', unused.length],
-          ['pairs captured', pairs.length],
-          ['scanned but not in label set', unexpected.length],
-          ['one-for-one', oneForOne ? 'YES' : 'NO'],
-          ['exported', new Date().toISOString().replace('T', ' ').slice(0, 19)],
-        ],
-      },
+      { name: 'SUMMARY', widths: [34, 16], rows: summary },
       {
         name: 'CROSS REFERENCE',
         widths: [14, 14, 12, 14, 20],
         rows: [
           ['OLD BIN', 'NEW BIN', 'LOCATION', 'SCANNED BY', 'SCANNED AT'],
-          ...pairs.map(p => [
-            p.old_bin,
-            p.new_bin,
-            p.location ?? '',
-            p.username ?? '',
-            String(p.created_at).replace('T', ' ').slice(0, 19),
-          ]),
+          ...pairs.map(p => [p.old_bin, p.new_bin, p.location ?? '', p.username ?? '', at(p.created_at)]),
         ],
       },
       {
@@ -83,6 +111,50 @@ export async function GET(req: Request) {
         rows: [['NEW BIN', 'OLD BIN', 'SCANNED BY'], ...unexpected.map(u => [u.new_bin, u.old_bin, u.username ?? ''])],
       },
     ]
+
+    if (checks.length) {
+      // Everything that failed, first and on its own sheet - this is the
+      // list someone walks the floor with.
+      sheets.push({
+        name: 'AUDIT - TO FIX',
+        widths: [14, 16, 16, 14, 14, 20],
+        rows: [
+          ['OLD BIN', 'HUNG LABEL', 'SHOULD BE', 'VERDICT', 'CHECKED BY', 'CHECKED AT'],
+          ...bad.map(c => [
+            c.old_bin,
+            c.new_bin,
+            c.expected_bin ?? '',
+            c.verdict === 'unmapped' ? 'NOT IN REFERENCE' : 'MISMATCH',
+            c.username ?? '',
+            at(c.created_at),
+          ]),
+        ],
+      })
+      sheets.push({
+        name: 'AUDIT - ALL',
+        widths: [10, 14, 16, 16, 12, 14, 20],
+        rows: [
+          ['SOURCE', 'OLD BIN', 'HUNG LABEL', 'SHOULD BE', 'VERDICT', 'CHECKED BY', 'CHECKED AT'],
+          ...checks.map(c => [
+            c.source,
+            c.old_bin,
+            c.new_bin,
+            c.expected_bin ?? '',
+            c.verdict.toUpperCase(),
+            c.username ?? '',
+            at(c.created_at),
+          ]),
+        ],
+      })
+    }
+
+    if (binMap.length) {
+      sheets.push({
+        name: 'BIN MAP',
+        widths: [14, 14],
+        rows: [['OLD BIN', 'NEW BIN'], ...binMap.map(m => [m.old_bin, m.new_bin])],
+      })
+    }
 
     const bytes = makeXlsx(sheets)
     const safe = site[0].name.replace(/[^\w-]+/g, '_')
