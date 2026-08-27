@@ -1,20 +1,24 @@
 import { neon, type NeonQueryFunction } from '@neondatabase/serverless'
+import { pickDatabaseUrl, DB_URL_HELP } from './dburl.mjs'
 
 /**
  * Lazy init. Next evaluates module top-level code at build time, and neon()
- * throws when DATABASE_URL is missing - which would break `next build` before
- * the Marketplace integration has provisioned anything.
+ * throws when the connection string is missing - which would break
+ * `next build` before the Marketplace integration has provisioned anything.
  *
  * Deliberately a plain function, not a Proxy wrapper: Proxies around the DB
  * client break libraries that introspect the object.
+ *
+ * The variable is resolved rather than named outright, because the Neon
+ * integration prefixes what it injects with the storage name - see dburl.mjs.
  */
 let _sql: NeonQueryFunction<false, false> | null = null
 
 export function db(): NeonQueryFunction<false, false> {
   if (!_sql) {
-    const url = process.env.DATABASE_URL
-    if (!url) throw new Error('DATABASE_URL is not set')
-    _sql = neon(url)
+    const found = pickDatabaseUrl(process.env)
+    if (!found) throw new Error(DB_URL_HELP)
+    _sql = neon(found.url)
   }
   return _sql
 }

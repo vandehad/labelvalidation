@@ -3,15 +3,8 @@
  *   npm run user -- <username> <password> [role]
  * role is "scanner" (default) or "admin".
  */
-import { config } from 'dotenv'
-
-// `dotenv/config` reads .env and nothing else, but the README says to put the
-// connection string in .env.local - and `vercel env pull` writes .env.local
-// too. Load that first; dotenv does not overwrite what is already set, so a
-// real environment variable still wins over both files.
-config({ path: '.env.local' })
-config()
 import { neon } from '@neondatabase/serverless'
+import { requireDatabaseUrl } from './env.mjs'
 
 const [username, password, role = 'scanner'] = process.argv.slice(2)
 if (!username || !password) {
@@ -27,12 +20,7 @@ if (!['scanner', 'admin'].includes(role)) {
   process.exit(1)
 }
 
-const url = process.env.DATABASE_URL
-if (!url) {
-  console.error('DATABASE_URL is not set.')
-  process.exit(1)
-}
-const sql = neon(url)
+const sql = neon(requireDatabaseUrl())
 
 const ITERATIONS = 210_000
 const enc = new TextEncoder()

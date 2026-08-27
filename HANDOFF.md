@@ -170,7 +170,7 @@ implies — is what failed at site 18.
 Verified in this repo:
 
 - `npm run build` — clean, all routes correctly dynamic
-- `npm test` — 67 logic tests pass
+- `npm test` — 79 logic tests pass
 - `npx tsc --noEmit` — clean
 
 Built:
@@ -269,11 +269,12 @@ there are more like it.
   `dotenv/config` reads `.env` only, which silently did nothing for anyone who
   followed the README and created `.env.local` — that was a real bug, fixed.
   Only Next auto-loads env files; Node scripts do not.
-- The Neon Marketplace integration may prefix everything it injects with the
-  storage name — `LABELPG_DATABASE_URL` and so on. The app reads plain
-  `DATABASE_URL`, so that has to be set to the **pooled** connection string as
-  well. `POSTGRES_PRISMA_URL` is for Prisma and `*_UNPOOLED` bypasses the
-  pooler; neither is what this wants.
+- The Neon Marketplace integration prefixes everything it injects with the
+  storage name — `LABELPG_DATABASE_URL` and so on — so the connection string is
+  *resolved*, not named: `src/lib/dburl.mjs` prefers `DATABASE_URL` and falls
+  back to any `*_DATABASE_URL` / `*_POSTGRES_URL`, skipping `*_UNPOOLED`,
+  `*_NON_POOLING`, `*_PRISMA_URL` and `*_NO_SSL`. It is plain `.mjs` so the
+  `scripts/*.mjs` and the app share one implementation; `allowJs` is on.
 - `scripts/test.ts` runs under `node --experimental-strip-types`. The
   `MODULE_TYPELESS_PACKAGE_JSON` warning is noise. Adding `"type": "module"`
   would silence it but was left alone to avoid disturbing the Next build.

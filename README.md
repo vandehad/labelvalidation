@@ -48,13 +48,18 @@ npm run migrate                     # run once against the provisioned database
 vercel deploy --prod
 ```
 
-`SESSION_SECRET` is the only variable you always set by hand.
+`SESSION_SECRET` is the only variable you set by hand.
 
-The Neon integration injects a whole family of variables and may prefix them
-with the storage name — `LABELPG_DATABASE_URL`, `LABELPG_PGHOST` and so on.
-This app reads plain **`DATABASE_URL`**, so set that to the same value as the
-integration's pooled URL. Not `POSTGRES_PRISMA_URL` (that is Prisma's format)
-and not `*_UNPOOLED` (that bypasses the connection pooler). Nothing else is required — no
+The connection string is found rather than named. The Neon integration prefixes
+everything it injects with the storage name — a store called `labelpg` produces
+`LABELPG_DATABASE_URL`, `LABELPG_PGHOST` and a dozen more — so
+`src/lib/dburl.mjs` takes `DATABASE_URL` if it is set and otherwise looks for a
+`*_DATABASE_URL` (then `*_POSTGRES_URL`), skipping the ones that are the wrong
+kind of URL: `*_UNPOOLED` and `*_NON_POOLING` bypass the connection pooler,
+`*_PRISMA_URL` is Prisma's format, `*_NO_SSL` is unencrypted.
+
+Nothing to copy by hand, and nothing to go stale if the store is ever recreated
+under a different name. Nothing else is required — no
 `vercel.json`, no build configuration.
 
 The database client initialises lazily, so `next build` succeeds before the
@@ -179,7 +184,7 @@ src/
 scripts/
   migrate.mjs               schema, safe to re-run
   create-user.mjs           add or update a user
-  test.ts                   67 logic tests, no database needed
+  test.ts                   79 logic tests, no database needed
 standalone/                 the offline single-file version this grew from
 ```
 
@@ -220,16 +225,24 @@ npm run user -- <username> <password> [scanner|admin]
 
 Re-running with an existing username resets that password.
 
+## Environment
+
+| Variable | Where from | Required |
+| --- | --- | --- |
+| `DATABASE_URL` | you, locally | only if no `*_DATABASE_URL` is present |
+| `<STORE>_DATABASE_URL` | Neon integration | used automatically when `DATABASE_URL` is unset |
+| `SESSION_SECRET` | you, always | yes — session cookies are unsigned without it |
+
 ## Tests
 
 ```bash
 npm test
 ```
 
-67 tests over bin parsing (both old formats), label generation (every basis,
+79 tests over bin parsing (both old formats), label generation (every basis,
 floor-level `Z`, 26-letter overflow), pair validation (every refusal case), bin
 map parsing (headers, blanks, duplicates, collisions, malformed codes), audit
-verdicts, CSV/TSV input, and the XLSX writer — including a round trip, where a
+verdicts, CSV/TSV input, connection-string resolution, and the XLSX writer — including a round trip, where a
 written workbook is read back and parsed as a bin map. No database required.
 
 Not covered: the concurrency guarantee itself, which needs a live database —

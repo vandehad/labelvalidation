@@ -9,7 +9,7 @@ the design decisions and, most importantly, what is not yet done.
 
 ```bash
 npm run dev        # local
-npm test           # 67 logic tests, no DB needed
+npm test           # 79 logic tests, no DB needed
 npm run build      # must stay clean
 npm run migrate    # schema, safe to re-run
 npm run user -- <name> <password> [scanner|admin]
@@ -25,7 +25,11 @@ npm run user -- <name> <password> [scanner|admin]
   leftovers.
 - `src/lib/db.ts` stays a lazy plain function. No `Proxy` wrapper, or DB
   introspection breaks. No top-level `neon()` call, or `next build` fails
-  before the integration provisions `DATABASE_URL`.
+  before the integration provisions the database.
+- The connection string is resolved by `src/lib/dburl.mjs`, never read straight
+  out of `process.env.DATABASE_URL`. The Neon integration prefixes what it
+  injects with the storage name. Keep that file `.mjs` — `scripts/*.mjs` run
+  under bare node and cannot import TypeScript, and two copies would drift.
 - **Validation mode records reality, it never refuses.** `/api/checks` writes
   whatever was scanned with a verdict of `match`, `mismatch` or `unmapped`. A
   wrong label has to be recorded before anyone can go and fix it. Do not add

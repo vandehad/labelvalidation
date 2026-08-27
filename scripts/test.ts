@@ -14,6 +14,7 @@ import {
 } from '../src/lib/bins.ts'
 import { makeXlsx } from '../src/lib/xlsx.ts'
 import { parseDelimited, readXlsxRows } from '../src/lib/sheet.ts'
+import { pickDatabaseUrl } from '../src/lib/dburl.mjs'
 import { writeFileSync, unlinkSync } from 'node:fs'
 
 let pass = 0
@@ -134,6 +135,33 @@ ok('csv two columns', JSON.stringify(parseDelimited('A-1-1-1,A0101E01')) === JSO
 ok('csv keeps quoted commas', parseDelimited('"a,b",A0101E01')[0][0] === 'a,b')
 ok('tsv detected', parseDelimited('A-1-1-1\tA0101E01\nA-1-1-2\tA0101D01').length === 2)
 ok('blank lines dropped', parseDelimited('A-1-1-1,A0101E01\n\n\nA-1-1-2,A0101D01').length === 2)
+
+/* ---------- which env var holds the connection string ---------- */
+const PG = 'postgres://u:p@ep-x-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require'
+const NEON_ENV = {
+  LABELPG_DATABASE_URL: PG,
+  LABELPG_DATABASE_URL_UNPOOLED: PG + '&unpooled',
+  LABELPG_POSTGRES_PRISMA_URL: PG + '&prisma',
+  LABELPG_POSTGRES_URL_NO_SSL: 'postgres://u:p@host/db',
+  LABELPG_POSTGRES_URL_NON_POOLING: PG,
+  LABELPG_PGHOST: 'ep-x.us-east-1.aws.neon.tech',
+  LABELPG_NEON_PROJECT_ID: 'quiet-bird-123',
+}
+ok('plain DATABASE_URL wins', pickDatabaseUrl({ DATABASE_URL: PG, ...NEON_ENV })?.name === 'DATABASE_URL')
+ok('falls back to the prefixed one', pickDatabaseUrl(NEON_ENV)?.name === 'LABELPG_DATABASE_URL')
+ok('returns the value, trimmed', pickDatabaseUrl({ DATABASE_URL: '  ' + PG + '  ' })?.url === PG)
+ok('skips unpooled', pickDatabaseUrl({ LABELPG_DATABASE_URL_UNPOOLED: PG }) === null)
+ok('skips prisma', pickDatabaseUrl({ LABELPG_POSTGRES_PRISMA_URL: PG }) === null)
+ok('skips non-pooling', pickDatabaseUrl({ LABELPG_POSTGRES_URL_NON_POOLING: PG }) === null)
+ok('ignores a host that is not a url', pickDatabaseUrl({ LABELPG_PGHOST: 'ep-x.neon.tech' }) === null)
+ok('ignores an empty value', pickDatabaseUrl({ DATABASE_URL: '' }) === null)
+ok('nothing set is null', pickDatabaseUrl({}) === null)
+ok('postgresql:// accepted', pickDatabaseUrl({ DATABASE_URL: 'postgresql://u:p@h/d' })?.url === 'postgresql://u:p@h/d')
+ok('POSTGRES_URL is a fallback', pickDatabaseUrl({ POSTGRES_URL: PG })?.name === 'POSTGRES_URL')
+ok(
+  'two stores pick the same one every time',
+  pickDatabaseUrl({ ZED_DATABASE_URL: PG, ALPHA_DATABASE_URL: PG })?.name === 'ALPHA_DATABASE_URL',
+)
 
 /* ---------- xlsx ---------- */
 const rows: Array<Array<string | number | null>> = [['OLD BIN', 'NEW BIN', 'QTY', 'NOTE']]
