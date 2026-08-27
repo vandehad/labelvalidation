@@ -3,7 +3,14 @@
  *   npm run user -- <username> <password> [role]
  * role is "scanner" (default) or "admin".
  */
-import 'dotenv/config'
+import { config } from 'dotenv'
+
+// `dotenv/config` reads .env and nothing else, but the README says to put the
+// connection string in .env.local - and `vercel env pull` writes .env.local
+// too. Load that first; dotenv does not overwrite what is already set, so a
+// real environment variable still wins over both files.
+config({ path: '.env.local' })
+config()
 import { neon } from '@neondatabase/serverless'
 
 const [username, password, role = 'scanner'] = process.argv.slice(2)

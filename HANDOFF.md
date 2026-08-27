@@ -221,6 +221,13 @@ Watch particularly for a bulk insert that repeats a key inside one statement —
 Postgres rejects that outright. `/api/map` collapses repeats before inserting,
 which is the part most worth confirming on real data.
 
+One bug of exactly this kind has already been found and fixed without a
+database: `scripts/migrate.mjs` called `sql(ddl)`, and as of
+`@neondatabase/serverless` v1 the function returned by `neon()` is
+tagged-template only — it throws on a plain string. Every DDL statement would
+have failed before touching Postgres. It now calls `sql.query(ddl)`. Assume
+there are more like it.
+
 **Also missing:**
 
 - Not yet published to the shared repository under `NPW-Companies/`. There is
@@ -258,8 +265,15 @@ which is the part most worth confirming on real data.
   checking — it did, before this was added. It is safe: `noEmit` is on.
 - `next build` also reconfigures `jsx: react-jsx` and adds a types include.
   Expected, harmless, already committed.
-- `scripts/*.mjs` need `.env.local` — they load it via `dotenv/config`. Only
-  Next auto-loads env files; plain Node scripts do not.
+- `scripts/*.mjs` load `.env.local` and then `.env`, explicitly. Plain
+  `dotenv/config` reads `.env` only, which silently did nothing for anyone who
+  followed the README and created `.env.local` — that was a real bug, fixed.
+  Only Next auto-loads env files; Node scripts do not.
+- The Neon Marketplace integration may prefix everything it injects with the
+  storage name — `LABELPG_DATABASE_URL` and so on. The app reads plain
+  `DATABASE_URL`, so that has to be set to the **pooled** connection string as
+  well. `POSTGRES_PRISMA_URL` is for Prisma and `*_UNPOOLED` bypasses the
+  pooler; neither is what this wants.
 - `scripts/test.ts` runs under `node --experimental-strip-types`. The
   `MODULE_TYPELESS_PACKAGE_JSON` warning is noise. Adding `"type": "module"`
   would silence it but was left alone to avoid disturbing the Next build.

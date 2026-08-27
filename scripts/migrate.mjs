@@ -6,13 +6,24 @@
  * the one-for-one guarantee a property of the database, so two people
  * scanning the same shelf at the same time cannot both succeed.
  */
-import 'dotenv/config'
+import { config } from 'dotenv'
+
+// `dotenv/config` reads .env and nothing else, but the README says to put the
+// connection string in .env.local - and `vercel env pull` writes .env.local
+// too. Load that first; dotenv does not overwrite what is already set, so a
+// real environment variable still wins over both files.
+config({ path: '.env.local' })
+config()
 import { neon } from '@neondatabase/serverless'
 
 const url = process.env.DATABASE_URL
 if (!url) {
   console.error('DATABASE_URL is not set. Copy .env.example to .env.local and fill it in,')
   console.error('or run:  vercel env pull .env.local')
+  console.error('')
+  console.error('On Vercel the Neon integration may name it with a project prefix, e.g.')
+  console.error('LABELPG_DATABASE_URL. This app reads DATABASE_URL - copy the pooled')
+  console.error('connection string into that name.')
   process.exit(1)
 }
 const sql = neon(url)
@@ -102,7 +113,10 @@ const steps = [
 ]
 
 for (const [name, ddl] of steps) {
-  await sql(ddl)
+  // sql.query(), not sql(): as of @neondatabase/serverless v1 the returned
+  // function is tagged-template only and throws when called with a plain
+  // string. These are fixed DDL strings with no interpolation.
+  await sql.query(ddl)
   console.log('  ok  ' + name)
 }
 

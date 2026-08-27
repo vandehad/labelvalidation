@@ -48,8 +48,13 @@ npm run migrate                     # run once against the provisioned database
 vercel deploy --prod
 ```
 
-`DATABASE_URL` is injected by the Neon Marketplace integration. `SESSION_SECRET`
-is the only variable you set by hand. Nothing else is required — no
+`SESSION_SECRET` is the only variable you always set by hand.
+
+The Neon integration injects a whole family of variables and may prefix them
+with the storage name — `LABELPG_DATABASE_URL`, `LABELPG_PGHOST` and so on.
+This app reads plain **`DATABASE_URL`**, so set that to the same value as the
+integration's pooled URL. Not `POSTGRES_PRISMA_URL` (that is Prisma's format)
+and not `*_UNPOOLED` (that bypasses the connection pooler). Nothing else is required — no
 `vercel.json`, no build configuration.
 
 The database client initialises lazily, so `next build` succeeds before the
