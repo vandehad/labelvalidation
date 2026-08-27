@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bin Conversion Station</title>
+<style>
+:root{
+  --bg:#f4f6f8; --panel:#fff; --ink:#1a2027; --muted:#5b6771; --line:#d6dde4;
+  --brand:#1f4e79; --brand2:#2e6da4; --ok:#1b7f4b; --okbg:#e6f5ec;
+  --warn:#8a6100; --warnbg:#fff6e0; --bad:#a32020; --badbg:#fdeaea;
+  --accent:#0f766e;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#12171c;--panel:#1a2128;--ink:#e8edf2;--muted:#93a1ad;--line:#2c3742;
+        --brand:#5b9bd5;--brand2:#7fb3e0;--ok:#4ade80;--okbg:#0f2e1e;
+        --warn:#fbbf24;--warnbg:#332a10;--bad:#f87171;--badbg:#3a1717;--accent:#2dd4bf;}
+}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--brand);color:#fff;padding:10px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+header h1{font-size:17px;margin:0;font-weight:700;letter-spacing:.3px}
+header .site{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:13px}
+header input{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);color:#fff;
+  border-radius:5px;padding:4px 8px;font:inherit;font-size:13px;width:190px}
+header input::placeholder{color:rgba(255,255,255,.65)}
+nav{display:flex;gap:2px;background:var(--panel);border-bottom:1px solid var(--line);padding:0 12px;overflow-x:auto}
+nav button{background:none;border:0;border-bottom:3px solid transparent;padding:11px 16px;font:inherit;
+  font-weight:600;color:var(--muted);cursor:pointer;white-space:nowrap}
+nav button.on{color:var(--brand);border-bottom-color:var(--brand)}
+main{padding:16px;max-width:1180px;margin:0 auto}
+.tab{display:none}.tab.on{display:block}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:16px;margin-bottom:14px}
+.card h2{margin:0 0 4px;font-size:15px;letter-spacing:.3px;text-transform:uppercase;color:var(--brand)}
+.card p.hint{margin:0 0 12px;color:var(--muted);font-size:13px}
+label{display:block;font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.4px;margin-bottom:4px}
+input[type=text],input[type=number],select,textarea{width:100%;padding:8px 10px;border:1px solid var(--line);
+  border-radius:6px;background:var(--panel);color:var(--ink);font:inherit}
+textarea{font-family:ui-monospace,Consolas,monospace;font-size:12px;min-height:90px}
+.row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.row>div{flex:1;min-width:130px}
+button.act{background:var(--brand);color:#fff;border:0;border-radius:6px;padding:9px 16px;
+  font:inherit;font-weight:600;cursor:pointer}
+button.act:hover{background:var(--brand2)}
+button.act.ghost{background:transparent;color:var(--brand);border:1px solid var(--brand)}
+button.act.danger{background:var(--bad)}
+button.act:disabled{opacity:.45;cursor:not-allowed}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#404040;color:#fff;text-align:left;padding:6px 8px;font-size:11px;
+  text-transform:uppercase;letter-spacing:.4px;position:sticky;top:0}
+td{padding:5px 8px;border-bottom:1px solid var(--line)}
+tr.dupe td{background:var(--badbg)}
+.scroll{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:6px}
+.stats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:9px 14px;min-width:104px}
+.stat b{display:block;font-size:23px;line-height:1.15;color:var(--brand)}
+.stat span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:700}
+.scanwrap{display:flex;gap:14px;flex-wrap:wrap}
+.scanwrap>div{flex:1;min-width:250px}
+.scanfield input{font:700 27px/1.2 ui-monospace,Consolas,monospace;padding:14px;text-align:center;
+  letter-spacing:1.5px;text-transform:uppercase}
+.scanfield input:focus{outline:3px solid var(--accent);border-color:var(--accent)}
+.scanfield.armed input{background:var(--okbg)}
+.msg{padding:12px 14px;border-radius:7px;font-weight:700;margin-bottom:12px;display:none;font-size:15px}
+.msg.show{display:block}
+.msg.ok{background:var(--okbg);color:var(--ok);border:1px solid var(--ok)}
+.msg.warn{background:var(--warnbg);color:var(--warn);border:1px solid var(--warn)}
+.msg.bad{background:var(--badbg);color:var(--bad);border:1px solid var(--bad)}
+.pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700}
+.pill.ok{background:var(--okbg);color:var(--ok)}
+.pill.bad{background:var(--badbg);color:var(--bad)}
+.pill.warn{background:var(--warnbg);color:var(--warn)}
+code{background:rgba(127,127,127,.15);padding:1px 5px;border-radius:4px;
+  font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.loc{font:700 19px ui-monospace,Consolas,monospace;color:var(--accent)}
+.split{display:flex;gap:14px;flex-wrap:wrap}
+.split>div{flex:1;min-width:280px}
+ul.notes{margin:8px 0 0;padding-left:18px;color:var(--muted);font-size:13px}
+ul.notes li{margin-bottom:3px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>BIN CONVERSION STATION</h1>
+  <div class="site">
+    <label style="margin:0;color:rgba(255,255,255,.75)">Site</label>
+    <input id="site" placeholder="e.g. 19 NPW Salem">
+  </div>
+</header>
+
+<nav>
+  <button data-tab="gen" class="on">1 · Generate Labels</button>
+  <button data-tab="scan">2 · Scan &amp; Pair</button>
+  <button data-tab="rec">3 · Reconcile</button>
+  <button data-tab="data">4 · Export &amp; Data</button>
+  <button data-tab="help">Help</button>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1 ============ -->
+<section id="tab-gen" class="tab on">
+  <div class="card">
+    <h2>Build the label superset</h2>
+    <p class="hint">Every zone/aisle/column gets a full run of shelf letters, so a label always exists
+      no matter how tall the rack turns out to be. Unused ones are identified later in Reconcile.</p>
+
+    <div class="row">
+      <div>
+        <label>Source of locations</label>
+        <select id="genMode">
+          <option value="derive">Derive from an old-bin list</option>
+          <option value="manual">Specify ranges manually</option>
+        </select>
+      </div>
+      <div>
+        <label>Shelf count basis</label>
+        <select id="genBasis">
+          <option value="global">Tallest column anywhere (uniform)</option>
+          <option value="zone">Tallest column in each zone</option>
+          <option value="aisle">Tallest column in each aisle</option>
+          <option value="actual">Actual shelves in each column</option>
+        </select>
+      </div>
+      <div>
+        <label>Reserve Z for floor level</label>
+        <select id="genZ">
+          <option value="auto">Only where shelf 0 exists</option>
+          <option value="always">Always add a Z label</option>
+          <option value="never">Never</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="deriveBox">
+      <label>Old bin list — paste, or load a file below</label>
+      <textarea id="oldList" placeholder="A-1-1-1&#10;A-1-1-2&#10;A010103&#10;..."></textarea>
+      <div class="btns" style="margin-top:8px">
+        <input type="file" id="oldFile" accept=".xlsx,.csv,.txt" style="flex:1">
+      </div>
+      <ul class="notes">
+        <li>Accepts <code>A-1-1-1</code> and <code>A010101</code> in the same list.</li>
+        <li>From a spreadsheet: the first column holding bins is used.</li>
+      </ul>
+    </div>
+
+    <div id="manualBox" style="display:none">
+      <div class="row">
+        <div><label>Zones</label><input type="text" id="mZones" placeholder="A,B,C or A-F" value="A"></div>
+        <div><label>Aisles from</label><input type="number" id="mA1" value="1" min="0"></div>
+        <div><label>to</label><input type="number" id="mA2" value="10" min="0"></div>
+        <div><label>Columns from</label><input type="number" id="mC1" value="1" min="0"></div>
+        <div><label>to</label><input type="number" id="mC2" value="20" min="0"></div>
+        <div><label>Shelves</label><input type="number" id="mS" value="26" min="1" max="26"></div>
+      </div>
+    </div>
+
+    <div class="btns" style="margin-top:12px">
+      <button class="act" id="btnGen">Generate labels</button>
+      <button class="act ghost" id="btnGenXlsx" disabled>Export label list (.xlsx)</button>
+      <button class="act ghost" id="btnGenCsv" disabled>Export (.csv)</button>
+    </div>
+  </div>
+
+  <div class="card" id="genResult" style="display:none">
+    <h2>Generated</h2>
+    <div class="stats" id="genStats"></div>
+    <div class="scroll"><table id="genTable"></table></div>
+  </div>
+</section>
+
+<!-- ============ TAB 2 ============ -->
+<section id="tab-scan" class="tab">
+  <div class="card">
+    <h2>Location</h2>
+    <p class="hint">Set where you are standing. Scanned new bins are checked against it,
+      so a label from the wrong aisle is caught immediately.</p>
+    <div class="row">
+      <div><label>Zone</label><input type="text" id="locZone" maxlength="1" placeholder="A" style="text-transform:uppercase"></div>
+      <div><label>Aisle</label><input type="number" id="locAisle" placeholder="1" min="0"></div>
+      <div><label>Column (optional)</label><input type="number" id="locCol" placeholder="any" min="0"></div>
+      <div style="display:flex;align-items:flex-end"><button class="act" id="btnLoc">Set location</button></div>
+    </div>
+    <div>Now working: <span class="loc" id="locNow">— not set —</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Scan pair</h2>
+    <p class="hint">Scan the OLD bin label, then the NEW one. The scanner's Enter moves you along;
+      the pair saves and the cursor returns to OLD automatically.</p>
+
+    <div class="msg" id="scanMsg"></div>
+
+    <div class="scanwrap">
+      <div class="scanfield" id="fOldWrap">
+        <label>1 · Old bin</label>
+        <input type="text" id="fOld" autocomplete="off" spellcheck="false" placeholder="scan…">
+      </div>
+      <div class="scanfield" id="fNewWrap">
+        <label>2 · New bin</label>
+        <input type="text" id="fNew" autocomplete="off" spellcheck="false" placeholder="scan…">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <div style="flex:0 0 auto"><label>Enforce new-bin format</label>
+        <select id="optFmt"><option value="1">Yes — Z##/##/L/##</option><option value="0">No</option></select></div>
+      <div style="flex:0 0 auto"><label>Must match location</label>
+        <select id="optLoc"><option value="1">Yes</option><option value="0">No</option></select></div>
+      <div style="flex:0 0 auto"><label>Sound</label>
+        <select id="optBeep"><option value="1">On</option><option value="0">Off</option></select></div>
+      <div style="display:flex;align-items:flex-end;gap:8px">
+        <button class="act ghost" id="btnUndo">Undo last</button>
+        <button class="act ghost" id="btnClearFields">Clear fields</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="stats" id="scanStats"></div>
+
+  <div class="card">
+    <h2>Pairs captured</h2>
+    <div class="scroll"><table id="pairTable"></table></div>
+  </div>
+</section>
+
+<!-- ============ TAB 3 ============ -->
+<section id="tab-rec" class="tab">
+  <div class="card">
+    <h2>Reconcile printed labels against what was used</h2>
+    <p class="hint">Load the list of labels that were actually printed and hung. Anything never scanned
+      is a bin to delete from the system; anything scanned but not on the list is unexpected.</p>
+    <div class="row">
+      <div>
+        <label>Printed label list</label>
+        <input type="file" id="printedFile" accept=".xlsx,.csv,.txt">
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:8px">
+        <button class="act ghost" id="btnUseGen">Use generated list instead</button>
+        <button class="act" id="btnRec">Reconcile</button>
+      </div>
+    </div>
+    <textarea id="printedList" placeholder="…or paste the printed labels here"></textarea>
+  </div>
+
+  <div class="card" id="recResult" style="display:none">
+    <h2>Result</h2>
+    <div class="stats" id="recStats"></div>
+    <div class="btns" style="margin-bottom:12px">
+      <button class="act" id="btnRecXlsx">Export reconciliation (.xlsx)</button>
+    </div>
+    <div class="split">
+      <div>
+        <h3 style="font-size:13px;color:var(--bad)">Unused — delete these bins</h3>
+        <div class="scroll" style="max-height:300px"><table id="unusedTable"></table></div>
+      </div>
+      <div>
+        <h3 style="font-size:13px;color:var(--warn)">Scanned but not on the printed list</h3>
+        <div class="scroll" style="max-height:300px"><table id="unexpTable"></table></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4 ============ -->
+<section id="tab-data" class="tab">
+  <div class="card">
+    <h2>Export the cross-reference</h2>
+    <p class="hint">The pairing table, ready to load into the WMS or hand to whoever maintains the master.</p>
+    <div class="btns">
+      <button class="act" id="btnXrefXlsx">Cross-reference (.xlsx)</button>
+      <button class="act ghost" id="btnXrefCsv">Cross-reference (.csv)</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Session backup</h2>
+    <p class="hint">Work is saved in this browser automatically. Back it up before switching machines —
+      clearing site data will otherwise lose it.</p>
+    <div class="btns">
+      <button class="act ghost" id="btnBackup">Download backup (.json)</button>
+      <input type="file" id="restoreFile" accept=".json" style="max-width:260px">
+      <button class="act danger" id="btnReset">Clear all scans</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Integrity check</h2>
+    <div class="stats" id="intStats"></div>
+    <div class="scroll" style="max-height:260px"><table id="intTable"></table></div>
+  </div>
+</section>
+
+<!-- ============ HELP ============ -->
+<section id="tab-help" class="tab">
+  <div class="card">
+    <h2>How a conversion runs</h2>
+    <ol style="padding-left:18px;line-height:1.85">
+      <li><b>Generate labels.</b> Feed in the old bin list, pick how tall the racks go, and produce the
+        full label superset. Print those.</li>
+      <li><b>Scan and pair.</b> At each aisle, set the location, then scan old → new for every shelf.
+        Duplicates and wrong-aisle labels are refused as you go.</li>
+      <li><b>Reconcile.</b> Load the printed list. Whatever was never scanned is unused and should be
+        deleted, which is what makes the conversion exactly one-for-one.</li>
+      <li><b>Export.</b> Take the cross-reference out as .xlsx or .csv.</li>
+    </ol>
+  </div>
+  <div class="card">
+    <h2>Scanner setup</h2>
+    <ul class="notes">
+      <li>Any USB scanner in keyboard-wedge mode works — no drivers, no configuration.</li>
+      <li>It must send <b>Enter</b> (CR) as a suffix. Most do by default; if not, scan the
+        "Add CR suffix" barcode in the scanner's manual.</li>
+      <li>Tab as a suffix works too.</li>
+      <li>Test it in the Old bin field — if the code lands and jumps to New bin, you are set.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h2>What gets refused</h2>
+    <ul class="notes">
+      <li>An old bin already paired — prevents double-scanning a shelf.</li>
+      <li>A new label already used elsewhere — prevents two shelves sharing a code.</li>
+      <li>A new label whose zone/aisle does not match the location you set.</li>
+      <li>A new label that is not in <code>Z##/##/L/##</code> form.</li>
+      <li>Old and new identical, which usually means a double-scan of the same label.</li>
+    </ul>
+  </div>
+</section>
+
+</main>
+
+<script src="lib.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
