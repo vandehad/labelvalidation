@@ -68,7 +68,10 @@ numbers:
 - **Zones R and S** — already numbered bottom-up, so the **lowest** becomes
   `A`, stepping up.
 - **Shelf 0** — floor level, always `Z`.
-- Trailing `01` is the position within the shelf. Only one exists today.
+- Trailing `01` is the position within the shelf. Every site seen so far has
+  exactly one, so it defaults to `01` — but the batch generator can lay down
+  `01`..`NN` where a shelf holds several, up to 99. Two digits is the ceiling;
+  a third would change the length of every code in the system.
 
 Rank-based beat value-based decisively on the real data: **30,835 correct vs
 325** for the descending zones. For R/S, where the two disagree, rank matched
@@ -115,8 +118,13 @@ whole reason the app moved off browser-local storage.
 `validatePair` with `enforceFormat: true` — the client cannot opt out, and
 there is no longer a toggle for it. A code that is not shaped like `A0101F01`
 in the cross-reference is a mis-scan that somebody has to find by hand later.
-The location check *is* still optional, because a scanner legitimately moves
-between aisles faster than they re-set the location.
+
+**There is no zone/aisle check.** One was built — set the location, and a label
+from the wrong aisle was refused — and then removed, because a scanner covers
+ground faster than they re-declare where they are standing, so it mostly
+refused correct scans. `pairs.location` survives as a free-text note that is
+recorded and exported but never validated. The question that matters at the
+shelf is whether the two labels in hand go together.
 
 **Validation refuses nothing.** `/api/checks` writes whatever was scanned with
 a verdict of `match`, `mismatch` or `unmapped`. Adding a refusal there would
@@ -159,6 +167,22 @@ around DB clients break libraries that introspect them.
 inline-string writer, no dependency. Verified by opening generated files in
 real Excel and in openpyxl, including `"`, `&` and `<>` in values.
 
+**The dash is display only.** `displayCode` inserts one after the third
+character so `A0000A01` reads as `A00-00A01` on the printed label. The barcode
+carries the undashed code, because that is what is in `pairs`, `labels` and
+`bin_map`. Put the dash in the barcode and every scan silently matches nothing
+— which is a whole afternoon to diagnose from the floor. There is a test
+asserting the barcode field specifically, not merely "some field", because the
+obvious regex for it matches the human-readable line by accident.
+
+**Printing goes through a local relay, not the browser.** A page cannot open a
+raw socket and cannot see a USB printer. `scripts/print-server.mjs` runs on the
+PC the printer is attached to and forwards ZPL either over TCP to port 9100 or
+through the Windows spooler in RAW mode. RAW is not optional: ZPL through a
+normal driver prints the text of the ZPL. The Windows path uses PowerShell with
+an inline `winspool` P/Invoke rather than a native module, because a native
+module would want a compiler on a warehouse PC.
+
 **Superset then reconcile.** Print more labels than needed, scan what is real,
 then delete the leftovers. The alternative — print exactly what the old data
 implies — is what failed at site 18.
@@ -170,7 +194,7 @@ implies — is what failed at site 18.
 Verified in this repo:
 
 - `npm run build` — clean, all routes correctly dynamic
-- `npm test` — 79 logic tests pass
+- `npm test` — 115 logic tests pass
 - `npx tsc --noEmit` — clean
 - 37 further checks against the live Neon database, end to end through the
   HTTP routes — see the section below
@@ -247,6 +271,11 @@ fine — it resolves `LABELPG_DATABASE_URL` and queries happily — but
 variable is listed for Production and the serving deployment is newer than it,
 so the value is most likely empty. Re-add it in the dashboard and redeploy;
 env changes only reach *new* deployments.
+
+**The Windows RAW print path has never run.** The network path is proven —
+labels came out of the Zebra at 192.168.60.81, both directly and through the
+relay. The USB/local-queue path is written but untested; `WritePrinter` failing
+would surface as a PowerShell error in the relay's console.
 
 **Nothing has been tested with two people scanning at once.** The constraints
 make the race impossible in principle and the conflict path is proven, but the

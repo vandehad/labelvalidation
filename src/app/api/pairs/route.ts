@@ -40,8 +40,12 @@ export async function GET(req: Request) {
  * The new-bin format is a hard gate here and not a preference: a
  * cross-reference is only worth anything if every code in it is a real code,
  * and a mis-scan that lands in this table has to be hunted down by hand later.
- * The client cannot turn it off - `enforceFormat` is accepted for the location
- * check only.
+ * The client cannot turn it off.
+ *
+ * There is no zone/aisle check. It was tried and removed: a scanner covers
+ * ground faster than they re-declare where they are standing, so the check
+ * mostly refused correct scans. `location` is now a free-text note, recorded
+ * and exported but never validated.
  *
  * The uniqueness checks are left to the database rather than a read-then-write
  * in application code: with several people scanning at once, a check-first
@@ -56,17 +60,13 @@ export async function POST(req: Request) {
       oldBin?: string
       newBin?: string
       location?: string | null
-      loc?: { zone: string; aisle: number; col: number | null } | null
     }
     const siteId = Number(body.siteId)
     const oldBin = String(body.oldBin ?? '').trim().toUpperCase()
     const newBin = String(body.newBin ?? '').trim().toUpperCase()
     if (!siteId) return json({ error: 'site is required' }, 400)
 
-    const why = validatePair(oldBin, newBin, {
-      enforceFormat: true,
-      location: body.loc ?? null,
-    })
+    const why = validatePair(oldBin, newBin, { enforceFormat: true, location: null })
     if (why) return json({ error: why }, 422)
 
     const sql = db()

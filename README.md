@@ -12,6 +12,8 @@ Two modes:
 
 - **Scan & Pair** — build the mapping by scanning both labels. One-for-one is
   guaranteed because the database will not accept a second claim on either bin.
+- **Batch + print** — say the shape of the warehouse (zones, aisles, columns,
+  shelves, positions) and get the label set, printed to a Zebra as Code 128.
 - **Validate** — audit a mapping that already exists. Upload the old→new
   worksheet (or point at the pairs already scanned in), then scan each shelf and
   get **match**, **mismatch** or **not in the reference**. Nothing is refused
@@ -80,6 +82,47 @@ integration has provisioned anything.
    one-for-one.
 5. **Export** the workbook: cross-reference, unused, unexpected, summary.
 
+## Generating and printing a batch
+
+The **Labels** tab builds the set either from an old bin list or, with
+*A batch by range*, from the shape of the warehouse: zones (`A-Z`, or `A-E,K`),
+an aisle range, columns per aisle, shelves per column, and positions per shelf.
+The count is shown before anything is generated, because 26 zones x 24 columns
+x 10 shelves is 62,400 labels and roughly 62 rolls.
+
+Each label is 4x1 inch, Code 128:
+
+```
++------------------------------------+
+|  ||| || |||| | || ||| |||| | ||||   |   barcode:  A0000A01
+|  ||| || |||| | || ||| |||| | ||||   |
+|             A00-00A01              |   shown as: A00-00A01
++------------------------------------+
+```
+
+**The dash is display only.** The barcode carries `A0000A01`, because that is
+what is in the database — scanning the dashed form would match nothing.
+
+### Getting them to the printer
+
+A browser cannot open a raw socket and cannot reach a USB printer, so either
+download the `.zpl` and send it however you already do, or run the relay on the
+PC the printer is attached to:
+
+```bash
+node scripts/print-server.mjs --host 192.168.60.81      # network printer
+node scripts/print-server.mjs --printer "Zebra ECOM2"   # USB / local queue
+```
+
+It listens on `http://localhost:9110`, accepts ZPL at `/print`, and forwards it
+— over a raw socket to port 9100 for a network printer, or through the Windows
+spooler in **RAW** mode for a local one. RAW matters: ZPL sent through a normal
+driver prints the *text* of the ZPL, pages of it.
+
+No dependencies, loopback only, and the app posts in chunks of 500 so a job of
+thousands shows progress instead of looking like a hang. Local queue names come
+from `powershell -c "Get-Printer | Select-Object Name"`.
+
 ## Auditing labels that are already hung
 
 Use the **Validate** tab when the labels exist and the question is whether they
@@ -133,7 +176,6 @@ one that counts.
 
 - old bin already paired, **including by another user**
 - new label already used elsewhere, **including by another user**
-- new label from a different zone/aisle/column than the location you set
 - new label not shaped like `A0101F01` — this one cannot be switched off, on
   the client or the server, because a bad code in the cross-reference has to
   be found by hand afterwards
@@ -180,11 +222,13 @@ src/
     db.ts                   lazy Neon client
     xlsx.ts                 dependency-free XLSX writer
     sheet.ts                browser-side .xlsx / .csv reader
+    zpl.ts                  Zebra label generation, Code 128
     api.ts                  shared route helpers
 scripts/
   migrate.mjs               schema, safe to re-run
   create-user.mjs           add or update a user
-  test.ts                   79 logic tests, no database needed
+  print-server.mjs          local relay: USB or network Zebra
+  test.ts                   115 logic tests, no database needed
 standalone/                 the offline single-file version this grew from
 ```
 
@@ -239,10 +283,12 @@ Re-running with an existing username resets that password.
 npm test
 ```
 
-79 tests over bin parsing (both old formats), label generation (every basis,
-floor-level `Z`, 26-letter overflow), pair validation (every refusal case), bin
-map parsing (headers, blanks, duplicates, collisions, malformed codes), audit
-verdicts, CSV/TSV input, connection-string resolution, and the XLSX writer — including a round trip, where a
+115 tests over bin parsing (both old formats), label generation (every basis,
+floor-level `Z`, 26-letter overflow, positions within a shelf), zone ranges,
+pair validation (every refusal case), bin map parsing (headers, blanks,
+duplicates, collisions, malformed codes), audit verdicts, CSV/TSV input,
+connection-string resolution, ZPL output (including that the dash never reaches
+the barcode), and the XLSX writer — including a round trip, where a
 written workbook is read back and parsed as a bin map. No database required.
 
 Not covered: the concurrency guarantee itself, which needs a live database —
@@ -256,6 +302,8 @@ Open `standalone/index.html` directly.
 
 ## Limits
 
+- 99 positions per shelf is the ceiling — the field is two digits, and a third
+  would change the length of every code.
 - 26 shelves per column is the ceiling — `A`–`Z` runs out. Columns exceeding it
   are flagged, never silently truncated. One column at the last site hit exactly
   26, so this is a live constraint.

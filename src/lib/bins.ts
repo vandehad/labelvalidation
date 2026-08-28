@@ -24,8 +24,23 @@ export function parseOld(raw: string): OldBin | null {
 
 const pad2 = (n: number) => String(n).padStart(2, '0')
 
-export function newCode(zone: string, aisle: number, col: number, letter: string) {
-  return `${zone}${pad2(aisle)}${pad2(col)}${letter}01`
+/**
+ * The trailing two digits are the position within the shelf. Every site seen
+ * so far has exactly one, so it defaults to 01 and nothing that existed before
+ * positions were added has to pass it.
+ */
+export function newCode(zone: string, aisle: number, col: number, letter: string, position = 1) {
+  return `${zone}${pad2(aisle)}${pad2(col)}${letter}${pad2(position)}`
+}
+
+/**
+ * How a code is shown to a human: a dash after the zone and aisle, so
+ * A0000A01 reads as A00-00A01. Display only - the barcode carries the code
+ * itself, undashed, or a scan will not match anything in the database.
+ */
+export function displayCode(code: string) {
+  const c = String(code ?? '').trim().toUpperCase()
+  return c.length > 3 ? `${c.slice(0, 3)}-${c.slice(3)}` : c
 }
 
 export function splitNew(code: string) {
@@ -37,6 +52,25 @@ export function splitNew(code: string) {
     letter: code[5],
     position: code.slice(6),
   }
+}
+
+/**
+ * "A-Z", "A-E,K", "A, B, C" - all the ways someone writes a set of zones.
+ * Anything that is not a single letter is dropped rather than guessed at.
+ */
+export function parseZones(input: string): string[] {
+  const out = new Set<string>()
+  for (const part of String(input ?? '').toUpperCase().split(/[,\s]+/)) {
+    if (!part) continue
+    const range = /^([A-Z])-([A-Z])$/.exec(part)
+    if (range) {
+      const [from, to] = [range[1].charCodeAt(0), range[2].charCodeAt(0)].sort((a, b) => a - b)
+      for (let c = from; c <= to; c++) out.add(String.fromCharCode(c))
+    } else if (/^[A-Z]$/.test(part)) {
+      out.add(part)
+    }
+  }
+  return [...out].sort()
 }
 
 export type Basis = 'global' | 'zone' | 'aisle' | 'actual'
@@ -52,6 +86,8 @@ export type GenSpec =
       colFrom: number
       colTo: number
       shelves: number
+      /** Positions within each shelf. Defaults to 1, which is every site so far. */
+      positions?: number
       zMode: ZMode
     }
 
@@ -117,6 +153,10 @@ export function generateLabels(spec: GenSpec): GenResult {
           cols.push({ zone: z, aisle: a, col: c, shelves: spec.shelves, floor: false })
   }
 
+  // Positions run 01..N within every shelf. 99 is the ceiling - the field is
+  // two digits, and a third would change the length of every code.
+  const positions = spec.mode === 'manual' ? Math.min(99, Math.max(1, Math.floor(spec.positions ?? 1))) : 1
+
   const labels: string[] = []
   const capped: GenResult['capped'] = []
   for (const e of cols) {
@@ -127,8 +167,10 @@ export function generateLabels(spec: GenSpec): GenResult {
       capped.push({ zone: e.zone, aisle: e.aisle, col: e.col, needed: n })
       n = limit
     }
-    for (let i = 0; i < n; i++) labels.push(newCode(e.zone, e.aisle, e.col, String.fromCharCode(65 + i)))
-    if (wantZ) labels.push(newCode(e.zone, e.aisle, e.col, 'Z'))
+    for (let i = 0; i < n; i++)
+      for (let p = 1; p <= positions; p++)
+        labels.push(newCode(e.zone, e.aisle, e.col, String.fromCharCode(65 + i), p))
+    if (wantZ) for (let p = 1; p <= positions; p++) labels.push(newCode(e.zone, e.aisle, e.col, 'Z', p))
   }
   labels.sort()
   return {

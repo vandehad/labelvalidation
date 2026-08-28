@@ -9,7 +9,7 @@ the design decisions and, most importantly, what is not yet done.
 
 ```bash
 npm run dev        # local
-npm test           # 79 logic tests, no DB needed
+npm test           # 115 logic tests, no DB needed
 npm run build      # must stay clean
 npm run migrate    # schema, safe to re-run
 npm run user -- <name> <password> [scanner|admin]
@@ -34,6 +34,12 @@ npm run user -- <name> <password> [scanner|admin]
   whatever was scanned with a verdict of `match`, `mismatch` or `unmapped`. A
   wrong label has to be recorded before anyone can go and fix it. Do not add
   refusals there — that is what `pairs` is for.
+- **The barcode is never dashed.** `displayCode` puts a dash after the third
+  character for the human-readable line only. A scan of `A00-00A01` matches
+  nothing in `pairs`, `labels` or `bin_map` - every code stored is undashed.
+- **No zone/aisle validation on pairing.** It was built, then removed: a
+  scanner covers ground faster than they re-declare where they stand, so it
+  mostly refused correct scans. `pairs.location` is a free-text note now.
 - Scanner input must never be cached. Routes are `force-dynamic`.
 - Refusals happen client-side for speed **and** server-side for truth. Keep
   both in step; `validatePair` in `src/lib/bins.ts` is shared by each.

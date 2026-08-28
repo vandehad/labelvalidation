@@ -11,10 +11,13 @@ import {
   NEW_PATTERN,
   parseMapTable,
   verdictFor,
+  displayCode,
+  parseZones,
 } from '../src/lib/bins.ts'
 import { makeXlsx } from '../src/lib/xlsx.ts'
 import { parseDelimited, readXlsxRows } from '../src/lib/sheet.ts'
 import { pickDatabaseUrl } from '../src/lib/dburl.mjs'
+import { zplLabel, zplBatch, DEFAULT_LABEL } from '../src/lib/zpl.ts'
 import { writeFileSync, unlinkSync } from 'node:fs'
 
 let pass = 0
@@ -162,6 +165,69 @@ ok(
   'two stores pick the same one every time',
   pickDatabaseUrl({ ZED_DATABASE_URL: PG, ALPHA_DATABASE_URL: PG })?.name === 'ALPHA_DATABASE_URL',
 )
+
+/* ---------- positions within a shelf ---------- */
+ok('position defaults to 01', newCode('A', 0, 0, 'A') === 'A0000A01')
+ok('position is padded', newCode('A', 1, 2, 'C', 7) === 'A0102C07')
+const multi = generateLabels({
+  mode: 'manual', zones: ['A'], aisleFrom: 1, aisleTo: 1,
+  colFrom: 1, colTo: 1, shelves: 2, positions: 3, zMode: 'never',
+})
+ok('2 shelves x 3 positions = 6 labels', multi.labels.length === 6)
+ok('positions run 01..03', multi.labels.slice(0, 3).join(',') === 'A0101A01,A0101A02,A0101A03')
+ok('every generated position is a valid code', multi.labels.every(l => NEW_PATTERN.test(l)))
+const withZ = generateLabels({
+  mode: 'manual', zones: ['A'], aisleFrom: 1, aisleTo: 1,
+  colFrom: 1, colTo: 1, shelves: 1, positions: 2, zMode: 'always',
+})
+ok('floor level gets positions too', withZ.labels.filter(l => l[5] === 'Z').length === 2)
+const batch = generateLabels({
+  mode: 'manual', zones: parseZones('A-D'), aisleFrom: 1, aisleTo: 2,
+  colFrom: 1, colTo: 24, shelves: 10, positions: 1, zMode: 'never',
+})
+ok('4 zones x 2 aisles x 24 cols x 10 shelves = 1920', batch.labels.length === 1920)
+ok('no duplicates in a batch', new Set(batch.labels).size === batch.labels.length)
+
+/* ---------- zone ranges ---------- */
+ok('A-Z is 26 zones', parseZones('A-Z').length === 26)
+ok('a range is inclusive', parseZones('A-C').join('') === 'ABC')
+ok('a backwards range still works', parseZones('C-A').join('') === 'ABC')
+ok('comma list', parseZones('A,B,K').join('') === 'ABK')
+ok('mixed list and range', parseZones('A-C, K').join('') === 'ABCK')
+ok('lowercase accepted', parseZones('a-c').join('') === 'ABC')
+ok('duplicates collapse', parseZones('A,A,A-B').join('') === 'AB')
+ok('junk dropped', parseZones('A, 7, ??, B').join('') === 'AB')
+ok('empty is empty', parseZones('').length === 0)
+
+/* ---------- display vs barcode ---------- */
+ok('dash goes after the third character', displayCode('A0000A01') === 'A00-00A01')
+ok('display uppercases', displayCode('a0102c01') === 'A01-02C01')
+ok('short strings are left alone', displayCode('AB') === 'AB')
+
+/* ---------- zpl ---------- */
+const z = zplLabel('A0102C01')
+ok('zpl is one label', (z.match(/\^XA/g) ?? []).length === 1 && z.trim().endsWith('^XZ'))
+ok('barcode carries the undashed code', z.includes('^FDA0102C01^FS'))
+ok('human line carries the dashed one', z.includes('^FDA01-02C01^FS'))
+// Pin the barcode's own ^FD, not merely "some ^FD after ^BCN" - a lazy match
+// runs straight past it into the human-readable line, which does have a dash.
+const barcodeData = /\^BCN[^^]*\^FD([^^]*)\^FS/.exec(z)?.[1]
+ok('barcode field holds exactly the stored code', barcodeData === 'A0102C01')
+ok('the dash is never inside the barcode field', !barcodeData?.includes('-'))
+ok('code 128 requested', z.includes('^BCN,'))
+ok('width is 4in at 203dpi', z.includes('^PW812'))
+ok('length is 1in at 203dpi', z.includes('^LL203'))
+ok('utf-8 declared', z.includes('^CI28'))
+const z300 = zplLabel('A0102C01', { ...DEFAULT_LABEL, dpi: 300 })
+ok('300dpi widens the label', z300.includes('^PW1200') && z300.includes('^LL300'))
+ok('300dpi widens the bar module', z300.includes('^BY3,'))
+const zc = zplLabel('A0102C01', { ...DEFAULT_LABEL, copies: 3 })
+ok('copies requested', zc.includes('^PQ3'))
+ok('darkness is clamped', zplLabel('A0102C01', { ...DEFAULT_LABEL, darkness: 99 }).includes('^MD30'))
+ok('control characters are stripped from data', !zplLabel('A^0102~C01').includes('^0102~C01'))
+const many = zplBatch(['A0101A01', 'A0101B01', 'A0101C01'])
+ok('a batch is one block per label', (many.match(/\^XA/g) ?? []).length === 3)
+ok('batch keeps every code', ['A0101A01', 'A0101B01', 'A0101C01'].every(c => many.includes('^FD' + c + '^FS')))
 
 /* ---------- xlsx ---------- */
 const rows: Array<Array<string | number | null>> = [['OLD BIN', 'NEW BIN', 'QTY', 'NOTE']]

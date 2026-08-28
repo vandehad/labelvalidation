@@ -9,8 +9,12 @@ import {
   type ZMode,
   type MapParse,
   type Verdict,
+  parseZones,
+  newCode,
+  displayCode,
 } from '@/lib/bins'
 import { readTable, parseDelimited } from '@/lib/sheet'
+import { zplBatch } from '@/lib/zpl'
 
 type User = { name: string; role: string }
 type Site = { id: number; name: string; status: string; labels: number; pairs: number }
@@ -236,17 +240,13 @@ function Main({ user, onOut }: { user: User; onOut: () => void }) {
 /* ------------------------------------------------------------------ */
 
 function Scan({ siteId, user }: { siteId: number; user: User }) {
-  const [loc, setLoc] = useState<Loc | null>(null)
-  const [zone, setZone] = useState('')
-  const [aisle, setAisle] = useState('')
-  const [col, setCol] = useState('')
+  const [where, setWhere] = useState('')
   const [oldBin, setOldBin] = useState('')
   const [newBin, setNewBin] = useState('')
   const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
   const [pairs, setPairs] = useState<Pair[]>([])
   const [totals, setTotals] = useState<{ pairs: number; labels: number }>({ pairs: 0, labels: 0 })
   const [byUser, setByUser] = useState<Array<{ username: string; n: number }>>([])
-  const [enforceLoc, setEnforceLoc] = useState(true)
   const [sound, setSound] = useState(true)
   const [busy, setBusy] = useState(false)
   const oldRef = useRef<HTMLInputElement>(null)
@@ -275,24 +275,16 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
     if (kind === 'ok') setTimeout(() => setMsg(m => (m?.text === text ? null : m)), 3000)
   }
 
-  const setLocation = () => {
-    const z = zone.trim().toUpperCase()
-    if (!/^[A-Z]$/.test(z)) return flash('bad', 'Zone must be a single letter.')
-    if (aisle === '') return flash('bad', 'Enter an aisle.')
-    setLoc({ zone: z, aisle: Number(aisle), col: col === '' ? null : Number(col) })
-    flash('ok', `Location set to ${z}-${aisle}${col === '' ? '' : '-' + col}`)
-    oldRef.current?.focus()
-  }
-
-  const locText = loc ? `${loc.zone}-${loc.aisle}${loc.col === null ? '' : '-' + loc.col}` : ''
-
   const commit = async () => {
     const o = oldBin.trim().toUpperCase()
     const n = newBin.trim().toUpperCase()
     if (!o || !n) return
     // Check locally first so an obvious mistake never costs a round trip.
     // The format gate is not optional - the server enforces it either way.
-    const why = validatePair(o, n, { enforceFormat: true, location: enforceLoc ? loc : null })
+    // There is deliberately no zone/aisle check: a scanner moves around faster
+    // than they would re-declare where they are standing, and the question
+    // that matters is whether the two labels go together.
+    const why = validatePair(o, n, { enforceFormat: true, location: null })
     if (why) {
       flash('bad', why)
       beep(false)
@@ -307,8 +299,7 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
           siteId,
           oldBin: o,
           newBin: n,
-          location: locText || null,
-          loc: enforceLoc ? loc : null,
+          location: where.trim() || null,
         }),
       })
       setPairs(p => [pair, ...p])
@@ -353,32 +344,17 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
   return (
     <>
       <div className="card">
-        <h2>Location</h2>
+        <h2>Where you are working <span className="pill warn">optional</span></h2>
         <p className="hint">
-          Scanned new bins are checked against this, so a label from the wrong aisle is caught immediately.
+          Recorded against every pair you scan and carried into the export. A note for whoever reads the
+          workbook later — nothing is checked against it.
         </p>
-        <div className="row">
-          <div>
-            <label>Zone</label>
-            <input value={zone} maxLength={1} onChange={e => setZone(e.target.value)} style={{ textTransform: 'uppercase' }} />
-          </div>
-          <div>
-            <label>Aisle</label>
-            <input type="number" value={aisle} onChange={e => setAisle(e.target.value)} />
-          </div>
-          <div>
-            <label>Column (optional)</label>
-            <input type="number" value={col} onChange={e => setCol(e.target.value)} placeholder="any" />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-            <button className="act" onClick={setLocation}>
-              Set location
-            </button>
-          </div>
-        </div>
-        <div>
-          Now working: <span className="loc">{locText || '— not set —'}</span>
-        </div>
+        <input
+          value={where}
+          onChange={e => setWhere(e.target.value)}
+          placeholder="e.g. Zone A, aisles 1-4"
+          autoComplete="off"
+        />
       </div>
 
       <div className="card">
@@ -416,7 +392,6 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
           </div>
         </div>
         <div className="row" style={{ marginTop: 12 }}>
-          <Toggle label="Must match location" v={enforceLoc} set={setEnforceLoc} />
           <Toggle label="Sound" v={sound} set={setSound} />
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
             <button className="act ghost" onClick={undo} disabled={busy}>
@@ -495,9 +470,19 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
 /* ------------------------------------------------------------------ */
 
 function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: () => void }) {
+  const [mode, setMode] = useState<'derive' | 'batch'>('derive')
   const [text, setText] = useState('')
   const [basis, setBasis] = useState<Basis>('global')
   const [zMode, setZMode] = useState<ZMode>('auto')
+
+  // batch
+  const [zonesText, setZonesText] = useState('A-Z')
+  const [aisleFrom, setAisleFrom] = useState('1')
+  const [aisleTo, setAisleTo] = useState('1')
+  const [columns, setColumns] = useState('24')
+  const [shelves, setShelves] = useState('10')
+  const [positions, setPositions] = useState('1')
+
   const [busy, setBusy] = useState(false)
   const [res, setRes] = useState<{
     stored: number
@@ -518,16 +503,46 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
       </div>
     )
 
+  const zones = parseZones(zonesText)
+  const batchSpec = {
+    mode: 'batch' as const,
+    zones,
+    aisleFrom: Math.max(0, Number(aisleFrom) || 0),
+    aisleTo: Math.max(0, Number(aisleTo) || 0),
+    columns: Math.max(1, Number(columns) || 1),
+    shelves: Math.max(1, Number(shelves) || 1),
+    positions: Math.max(1, Number(positions) || 1),
+  }
+  const aisleCount = Math.max(0, batchSpec.aisleTo - batchSpec.aisleFrom + 1)
+  const perColumn = (batchSpec.shelves + (zMode === 'always' ? 1 : 0)) * batchSpec.positions
+  const batchCount = zones.length * aisleCount * batchSpec.columns * perColumn
+
   const gen = async () => {
     setBusy(true)
     setErr('')
     try {
-      const oldBins = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
-      if (!oldBins.length) throw new Error('Paste the old bin list first.')
-      const r = await api('/api/labels', {
-        method: 'POST',
-        body: JSON.stringify({ siteId, spec: { mode: 'derive', oldBins, basis, zMode } }),
-      })
+      let spec
+      if (mode === 'derive') {
+        const oldBins = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+        if (!oldBins.length) throw new Error('Paste the old bin list first.')
+        spec = { mode: 'derive', oldBins, basis, zMode }
+      } else {
+        if (!zones.length) throw new Error('No zones - try A-Z, or A-E,K.')
+        if (aisleCount < 1) throw new Error('The aisle range is backwards.')
+        if (batchSpec.shelves > 26) throw new Error('More than 26 shelves has no letter left to use.')
+        spec = {
+          mode: 'manual',
+          zones,
+          aisleFrom: batchSpec.aisleFrom,
+          aisleTo: batchSpec.aisleTo,
+          colFrom: 1,
+          colTo: batchSpec.columns,
+          shelves: batchSpec.shelves,
+          positions: batchSpec.positions,
+          zMode,
+        }
+      }
+      const r = await api('/api/labels', { method: 'POST', body: JSON.stringify({ siteId, spec }) })
       setRes(r)
       onDone()
     } catch (e) {
@@ -540,20 +555,18 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
   return (
     <>
       <div className="card">
-        <h2>Build the label superset</h2>
+        <h2>Build the label set</h2>
         <p className="hint">
           Every zone/aisle/column gets a full run of shelf letters, so a label always exists no matter how
           tall the rack turns out to be. Unused ones fall out in Reconcile.
         </p>
         {err && <div className="msg show bad">{err}</div>}
         <div className="row">
-          <div>
-            <label>Shelf count basis</label>
-            <select value={basis} onChange={e => setBasis(e.target.value as Basis)}>
-              <option value="global">Tallest column anywhere (uniform)</option>
-              <option value="zone">Tallest column in each zone</option>
-              <option value="aisle">Tallest column in each aisle</option>
-              <option value="actual">Actual shelves in each column</option>
+          <div style={{ flex: '1 1 320px' }}>
+            <label>Where the racks come from</label>
+            <select value={mode} onChange={e => setMode(e.target.value as 'derive' | 'batch')}>
+              <option value="derive">An old bin list — work out the racks from it</option>
+              <option value="batch">A batch by range — say the shape of the warehouse</option>
             </select>
           </div>
           <div>
@@ -565,11 +578,90 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
             </select>
           </div>
         </div>
-        <label>Old bin list — one per line</label>
-        <textarea value={text} onChange={e => setText(e.target.value)} placeholder={'A-1-1-1\nA-1-1-2\nA010103'} />
+
+        {mode === 'derive' ? (
+          <>
+            <div className="row">
+              <div style={{ flex: '1 1 320px' }}>
+                <label>Shelf count basis</label>
+                <select value={basis} onChange={e => setBasis(e.target.value as Basis)}>
+                  <option value="global">Tallest column anywhere (uniform)</option>
+                  <option value="zone">Tallest column in each zone</option>
+                  <option value="aisle">Tallest column in each aisle</option>
+                  <option value="actual">Actual shelves in each column</option>
+                </select>
+              </div>
+            </div>
+            <label>Old bin list — one per line</label>
+            <textarea value={text} onChange={e => setText(e.target.value)} placeholder={'A-1-1-1\nA-1-1-2\nA010103'} />
+          </>
+        ) : (
+          <>
+            <div className="row">
+              <div style={{ flex: '1 1 220px' }}>
+                <label>Zones</label>
+                <input
+                  value={zonesText}
+                  onChange={e => setZonesText(e.target.value)}
+                  placeholder="A-Z, or A-E,K"
+                  style={{ textTransform: 'uppercase' }}
+                />
+              </div>
+              <div>
+                <label>Aisle from</label>
+                <input type="number" min={0} value={aisleFrom} onChange={e => setAisleFrom(e.target.value)} />
+              </div>
+              <div>
+                <label>Aisle to</label>
+                <input type="number" min={0} value={aisleTo} onChange={e => setAisleTo(e.target.value)} />
+              </div>
+              <div>
+                <label>Columns per aisle</label>
+                <input type="number" min={1} value={columns} onChange={e => setColumns(e.target.value)} />
+              </div>
+              <div>
+                <label>Shelves per column</label>
+                <input type="number" min={1} max={26} value={shelves} onChange={e => setShelves(e.target.value)} />
+              </div>
+              <div>
+                <label>Positions per shelf</label>
+                <input type="number" min={1} max={99} value={positions} onChange={e => setPositions(e.target.value)} />
+              </div>
+            </div>
+            <div className="stats" style={{ marginTop: 4 }}>
+              <Stat n={zones.length} l="zones" />
+              <Stat n={aisleCount} l="aisles each" />
+              <Stat n={batchSpec.columns} l="columns each" />
+              <Stat n={perColumn} l="labels per column" />
+              <Stat n={batchCount.toLocaleString()} l="labels in total" />
+            </div>
+            {batchCount > 20000 && (
+              <div className="msg show warn">
+                {batchCount.toLocaleString()} labels is a lot of stock — around{' '}
+                {Math.ceil(batchCount / 1000).toLocaleString()} rolls of 1,000. Worth generating one zone at a
+                time.
+              </div>
+            )}
+            {zones.length > 0 && (
+              <p className="hint">
+                First and last: <code>{newCode(zones[0], batchSpec.aisleFrom, 1, 'A', 1)}</code> …{' '}
+                <code>
+                  {newCode(
+                    zones[zones.length - 1],
+                    batchSpec.aisleTo,
+                    batchSpec.columns,
+                    zMode === 'always' ? 'Z' : String.fromCharCode(64 + batchSpec.shelves),
+                    batchSpec.positions,
+                  )}
+                </code>
+              </p>
+            )}
+          </>
+        )}
+
         <div className="btns" style={{ marginTop: 10 }}>
           <button className="act" onClick={gen} disabled={busy}>
-            {busy ? 'Generating…' : 'Generate and store'}
+            {busy ? 'Generating…' : mode === 'batch' ? `Generate ${batchCount.toLocaleString()} and store` : 'Generate and store'}
           </button>
           <a className="act ghost" href={`/api/export?site=${siteId}`} style={{ textDecoration: 'none' }}>
             Export workbook (.xlsx)
@@ -601,7 +693,190 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
           )}
         </div>
       )}
+
+      <Print siteId={siteId} />
     </>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * Printing to the Zebra.
+ *
+ * A browser cannot open a raw socket and cannot reach a USB printer, so there
+ * are two ways out: download the ZPL and send it however you already do, or
+ * run `scripts/print-server.mjs` on the PC the printer is attached to and let
+ * this post to it. The relay covers both network and USB printers; the
+ * download covers everything else.
+ *
+ * Labels are printed from what is *stored* for the site, never from the form
+ * above, so what comes off the printer is what the database will accept.
+ */
+function Print({ siteId }: { siteId: number }) {
+  const [relay, setRelay] = useState('http://localhost:9110')
+  const [status, setStatus] = useState<{ ok: boolean; target?: string; mode?: string } | null>(null)
+  const [dpi, setDpi] = useState<203 | 300>(203)
+  const [copies, setCopies] = useState('1')
+  const [darkness, setDarkness] = useState('10')
+  const [speed, setSpeed] = useState('4')
+  const [filter, setFilter] = useState('')
+  const [codes, setCodes] = useState<string[] | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
+
+  const spec = { dpi, widthIn: 4, heightIn: 1, darkness: Number(darkness) || 10, speed: Number(speed) || 4, copies: Math.max(1, Number(copies) || 1) }
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api(`/api/labels?site=${siteId}`)
+      setCodes((d.labels as Array<{ code: string }>).map(l => l.code))
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    }
+  }, [siteId])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const check = async () => {
+    setStatus(null)
+    try {
+      const r = await fetch(relay.replace(/\/$/, '') + '/status')
+      setStatus(await r.json())
+    } catch {
+      setStatus({ ok: false })
+    }
+  }
+
+  const zones = parseZones(filter)
+  const selected = (codes ?? []).filter(c => !zones.length || zones.includes(c[0]))
+
+  const download = () => {
+    const zpl = zplBatch(selected, spec)
+    const blob = new Blob([zpl], { type: 'application/octet-stream' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `labels-${selected.length}.zpl`
+    document.body.appendChild(a)
+    a.click()
+    setTimeout(() => {
+      URL.revokeObjectURL(url)
+      a.remove()
+    }, 1500)
+  }
+
+  const print = async () => {
+    if (!selected.length) return
+    setBusy(true)
+    setMsg(null)
+    // Chunked so a job of thousands is a series of modest posts with visible
+    // progress, rather than one request that looks like a hang.
+    const CHUNK = 500
+    try {
+      for (let i = 0; i < selected.length; i += CHUNK) {
+        const slice = selected.slice(i, i + CHUNK)
+        setMsg({ kind: 'warn', text: `Sending ${Math.min(i + CHUNK, selected.length).toLocaleString()} of ${selected.length.toLocaleString()}…` })
+        const r = await fetch(relay.replace(/\/$/, '') + '/print', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: zplBatch(slice, spec),
+        })
+        if (!r.ok) {
+          const b = await r.json().catch(() => ({}))
+          throw new Error(b.error || `Relay returned ${r.status}`)
+        }
+      }
+      setMsg({ kind: 'ok', text: `Sent ${(selected.length * spec.copies).toLocaleString()} label(s) to the printer.` })
+    } catch (e) {
+      setMsg({
+        kind: 'bad',
+        text: `${e instanceof Error ? e.message : String(e)} — is the relay running? node scripts/print-server.mjs --host <printer-ip>`,
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Print to the Zebra</h2>
+      <p className="hint">
+        Prints the labels stored for this site, so what comes off the printer is exactly what the database
+        will accept. The barcode carries the code undashed — <code>A0000A01</code> — and the line underneath
+        shows it as <code>A00-00A01</code> for a human to read. Scanning the dashed form would match nothing.
+      </p>
+      {msg && <div className={`msg show ${msg.kind}`}>{msg.text}</div>}
+
+      <div className="row">
+        <div>
+          <label>Printer resolution</label>
+          <select value={dpi} onChange={e => setDpi(Number(e.target.value) as 203 | 300)}>
+            <option value={203}>203 dpi — ZD420 / ZD620 / ZT230</option>
+            <option value={300}>300 dpi — the -300 models</option>
+          </select>
+        </div>
+        <div>
+          <label>Copies of each</label>
+          <input type="number" min={1} value={copies} onChange={e => setCopies(e.target.value)} />
+        </div>
+        <div>
+          <label>Darkness (0–30)</label>
+          <input type="number" min={0} max={30} value={darkness} onChange={e => setDarkness(e.target.value)} />
+        </div>
+        <div>
+          <label>Speed (in/sec)</label>
+          <input type="number" min={1} max={14} value={speed} onChange={e => setSpeed(e.target.value)} />
+        </div>
+        <div>
+          <label>Only these zones</label>
+          <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="all" style={{ textTransform: 'uppercase' }} />
+        </div>
+      </div>
+
+      <div className="stats" style={{ marginTop: 4 }}>
+        <Stat n={(codes?.length ?? 0).toLocaleString()} l="labels stored" />
+        <Stat n={selected.length.toLocaleString()} l="selected to print" />
+        <Stat n={(selected.length * spec.copies).toLocaleString()} l="labels off the roll" />
+        <Stat n={`4×1″`} l={`at ${dpi} dpi`} />
+      </div>
+
+      <div className="row" style={{ marginTop: 10 }}>
+        <div style={{ flex: '1 1 260px' }}>
+          <label>Local print relay</label>
+          <input value={relay} onChange={e => setRelay(e.target.value)} placeholder="http://localhost:9110" />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+          <button className="act ghost" onClick={check}>
+            Test relay
+          </button>
+          {status && (
+            <span className={`pill ${status.ok ? 'ok' : 'bad'}`}>
+              {status.ok ? `${status.mode} → ${status.target}` : 'not reachable'}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="btns" style={{ marginTop: 12 }}>
+        <button className="act" onClick={print} disabled={busy || !selected.length}>
+          {busy ? 'Sending…' : `Print ${selected.length.toLocaleString()} label(s)`}
+        </button>
+        <button className="act ghost" onClick={download} disabled={!selected.length}>
+          Download .zpl
+        </button>
+        {busy && <span className="spin" />}
+      </div>
+
+      {selected.length > 0 && (
+        <p className="hint" style={{ marginTop: 10 }}>
+          First: <code>{selected[0]}</code> prints as <code>{displayCode(selected[0])}</code>. Last:{' '}
+          <code>{selected[selected.length - 1]}</code> as <code>{displayCode(selected[selected.length - 1])}</code>.
+        </p>
+      )}
+    </div>
   )
 }
 
