@@ -1,7 +1,8 @@
 /**
  * Local print relay. Runs on the PC the Zebra is attached to.
  *
- *   node scripts/print-server.cjs                     open the setup page
+ *   node scripts/print-server.cjs                     use saved settings
+ *   node scripts/print-server.cjs --setup             force the setup page
  *   node scripts/print-server.cjs --host 192.168.60.81 network printer
  *   node scripts/print-server.cjs --printer "Zebra"    USB / local queue
  *
@@ -228,6 +229,12 @@ const PAGE = printers => `<!doctype html>
   <button class="ghost" id="test">Print a test label</button>
   <div class="msg" id="msg"></div>
 </div>
+<div class="card">
+  <h2>Stop</h2>
+  <p>Closing this window on its own leaves the relay running in the background.
+     Use this to actually stop it.</p>
+  <button class="ghost" id="quit">Stop the relay and close</button>
+</div>
 <script>
  const $ = i => document.getElementById(i)
  const sync = () => { const n = $('mode').value === 'network'; $('net').hidden = !n; $('loc').hidden = n }
@@ -242,6 +249,14 @@ const PAGE = printers => `<!doctype html>
    const d = await r.json()
    if (r.ok) { $('now').textContent = d.target; say('ok', 'Saved. The web app can print now.') }
    else say('bad', d.error || 'Could not save that.')
+ }
+ $('quit').onclick = async () => {
+   say('ok', 'Stopping…')
+   try { await fetch('/quit', { method: 'POST' }) } catch (e) {}
+   document.body.innerHTML = '<div class="card"><h1>Stopped</h1>' +
+     '<p>The relay is no longer running. Printing from the web app will fail ' +
+     'until you start it again. You can close this window.</p></div>'
+   setTimeout(() => window.close(), 400)
  }
  $('test').onclick = async () => {
    say('ok', 'Sending…')
@@ -347,6 +362,14 @@ const server = http.createServer(async (req, res) => {
       return void json(res, 200, { ok: true, labels, bytes: zpl.length })
     }
 
+    if (req.method === 'POST' && url === '/quit') {
+      json(res, 200, { ok: true })
+      console.log('  stopping, asked from the app window')
+      // Let the response flush before the process goes.
+      setTimeout(() => process.exit(0), 250)
+      return
+    }
+
     json(res, 404, { error: 'POST ZPL to /print, or open / for setup' })
   } catch (e) {
     console.error('  FAILED: ' + e.message)
@@ -364,8 +387,37 @@ server.listen(LISTEN, '127.0.0.1', () => {
   console.log('  printing to ' + describe())
   console.log('  accepting   ' + ALLOW.join(', '))
   console.log('')
-  console.log('  Leave this window open. Ctrl-C to stop.')
-  if (!target.mode && process.platform === 'win32') {
-    spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
-  }
+  console.log('  Close the app window to stop, or press Ctrl-C here.')
+  if (!argv.includes('--no-window')) openWindow(url)
 })
+
+/**
+ * Open the setup page as its own window rather than a browser tab.
+ *
+ * `--app=` on Edge or Chrome gives a chromeless window with no address bar or
+ * tabs, which is as close to a native app as this gets without shipping a
+ * whole browser runtime alongside it. Falls back to the default browser, which
+ * still works, just with browser furniture around it.
+ */
+function openWindow(url) {
+  if (process.platform !== 'win32') return
+  const candidates = [
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  ]
+  for (const exe of candidates) {
+    if (!fs.existsSync(exe)) continue
+    try {
+      spawn(exe, [`--app=${url}`, '--window-size=680,760'], {
+        detached: true,
+        stdio: 'ignore',
+      }).unref()
+      return
+    } catch {
+      /* try the next one */
+    }
+  }
+  spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
+}

@@ -115,12 +115,26 @@ cannot reach a Zebra by itself. Something local has to bridge it.
 npm run build-exe        # produces dist/print-server.exe, ~88 MB
 ```
 
-Copy that one file to the PC with the printer and double-click it. A setup page
-opens: pick **network** and type the printer's IP, or **USB/shared** and choose
-from the installed queues, then *Print a test label* to prove the path. The
-choice is remembered in `~/.labelvalidation/print-server.json`. It carries the
-whole Node runtime, which is where the size goes — no Node, no npm, no
-dependencies on the machine that runs it.
+Copy that one file to the PC with the printer and double-click it. It opens its
+own window — Edge or Chrome in `--app` mode, so no address bar or tabs — where
+you pick **network** and type the printer's IP, or **USB/shared** and choose
+from the installed queues, then *Print a test label* to prove the path before
+touching the web app.
+
+Day to day:
+
+| | |
+| --- | --- |
+| Change the printer | reopen `http://localhost:9110`, or just run the .exe again |
+| Stop it | **Stop the relay** in the window, or Ctrl-C in the console |
+| Start it | double-click the .exe; it remembers the printer |
+
+The choice lives in `~/.labelvalidation/print-server.json`; delete that to start
+over. Closing the app window alone leaves it running in the background — the
+Stop button is what actually ends it.
+
+It carries the whole Node runtime, which is where the size goes — no Node, no
+npm, no dependencies on the machine that runs it.
 
 **From source**, if Node is already there:
 
