@@ -13,7 +13,9 @@
     "lint": "next lint",
     "migrate": "node scripts/migrate.mjs",
     "user": "node scripts/create-user.mjs",
-    "test": "node --experimental-strip-types scripts/test.ts"
+    "test": "node --experimental-strip-types scripts/test.ts",
+    "print-server": "node scripts/print-server.cjs",
+    "build-exe": "node scripts/build-exe.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

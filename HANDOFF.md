@@ -175,6 +175,19 @@ carries the undashed code, because that is what is in `pairs`, `labels` and
 asserting the barcode field specifically, not merely "some field", because the
 obvious regex for it matches the human-readable line by accident.
 
+**The barcode carries a padded field.** The site's own ZPL encodes
+`A     A2707G05` - `A`, five spaces, then the code - a six-character
+left-justified field. The printed line carries no such thing. New labels match
+that so a rack of old and new scans alike, and `normalizeScan` in `bins.ts`
+takes whatever follows the last space, applied on the client and again on the
+server. Skip it and every real scan fails the format gate and lands as
+`unmapped`, indistinguishable from a bin nobody mapped.
+
+Unresolved: in `A     A2707G05` the prefix `A` is also the zone letter, so a
+constant `A` and a repeated zone letter look identical. The ZPL for any label
+outside zone A settles it. Getting it wrong puts the wrong first character in
+every barcode outside zone A.
+
 **Printing goes through a local relay, not the browser.** A page cannot open a
 raw socket and cannot see a USB printer. `scripts/print-server.mjs` runs on the
 PC the printer is attached to and forwards ZPL either over TCP to port 9100 or
@@ -194,7 +207,7 @@ implies — is what failed at site 18.
 Verified in this repo:
 
 - `npm run build` — clean, all routes correctly dynamic
-- `npm test` — 115 logic tests pass
+- `npm test` — 148 logic tests pass
 - `npx tsc --noEmit` — clean
 - 37 further checks against the live Neon database, end to end through the
   HTTP routes — see the section below
@@ -272,10 +285,11 @@ variable is listed for Production and the serving deployment is newer than it,
 so the value is most likely empty. Re-add it in the dashboard and redeploy;
 env changes only reach *new* deployments.
 
-**The Windows RAW print path has never run.** The network path is proven —
-labels came out of the Zebra at 192.168.60.81, both directly and through the
-relay. The USB/local-queue path is written but untested; `WritePrinter` failing
-would surface as a PowerShell error in the relay's console.
+**The Windows RAW print path has never run.** The network path is proven end
+to end - labels came out of the Zebra at 192.168.60.81 directly, through the
+relay, and through the packaged `.exe`. The USB/local-queue path is written but
+untested; a `WritePrinter` failure would surface as a PowerShell error in the
+relay's console.
 
 **Nothing has been tested with two people scanning at once.** The constraints
 make the race impossible in principle and the conflict path is proven, but the

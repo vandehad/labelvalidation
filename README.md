@@ -14,6 +14,7 @@ Two modes:
   guaranteed because the database will not accept a second claim on either bin.
 - **Batch + print** — say the shape of the warehouse (zones, aisles, columns,
   shelves, positions) and get the label set, printed to a Zebra as Code 128.
+- **Admin** — accounts, roles, password resets. Nothing is ever deleted.
 - **Validate** — audit a mapping that already exists. Upload the old→new
   worksheet (or point at the pairs already scanned in), then scan each shelf and
   get **match**, **mismatch** or **not in the reference**. Nothing is refused
@@ -105,23 +106,41 @@ what is in the database — scanning the dashed form would match nothing.
 
 ### Getting them to the printer
 
-A browser cannot open a raw socket and cannot reach a USB printer, so either
-download the `.zpl` and send it however you already do, or run the relay on the
-PC the printer is attached to:
+A browser has no raw socket API and cannot see a USB printer, so a hosted page
+cannot reach a Zebra by itself. Something local has to bridge it.
+
+**The easy way — a standalone executable, nothing installed.**
 
 ```bash
-node scripts/print-server.mjs --host 192.168.60.81      # network printer
-node scripts/print-server.mjs --printer "Zebra ECOM2"   # USB / local queue
+npm run build-exe        # produces dist/print-server.exe, ~88 MB
 ```
 
-It listens on `http://localhost:9110`, accepts ZPL at `/print`, and forwards it
-— over a raw socket to port 9100 for a network printer, or through the Windows
-spooler in **RAW** mode for a local one. RAW matters: ZPL sent through a normal
-driver prints the *text* of the ZPL, pages of it.
+Copy that one file to the PC with the printer and double-click it. A setup page
+opens: pick **network** and type the printer's IP, or **USB/shared** and choose
+from the installed queues, then *Print a test label* to prove the path. The
+choice is remembered in `~/.labelvalidation/print-server.json`. It carries the
+whole Node runtime, which is where the size goes — no Node, no npm, no
+dependencies on the machine that runs it.
 
-No dependencies, loopback only, and the app posts in chunks of 500 so a job of
-thousands shows progress instead of looking like a hang. Local queue names come
-from `powershell -c "Get-Printer | Select-Object Name"`.
+**From source**, if Node is already there:
+
+```bash
+npm run print-server                              # opens the setup page
+npm run print-server -- --host 192.168.60.81      # network printer
+npm run print-server -- --printer "Zebra ECOM2"   # USB / local queue
+```
+
+Either way it listens on `http://localhost:9110`, accepts ZPL at `/print`, and
+forwards it — a raw socket to port 9100 for a network printer, or the Windows
+spooler in **RAW** mode for a local one. RAW is not optional: ZPL through a
+normal driver prints the *text* of the ZPL, pages of it.
+
+Loopback only, so nothing off that PC can drive your printer, and the app posts
+in chunks of 500 so a run of thousands shows progress rather than looking like
+a hang.
+
+**Or no local software at all:** *Download .zpl* in the Print card, then
+`copy /b labels.zpl \\localhost\ZebraECOM2`.
 
 ## Auditing labels that are already hung
 
@@ -210,6 +229,8 @@ src/
       labels                generate + store the superset
       pairs                 record a pair, list recent, per-user counts
       pairs/[id]            undo
+      users                 list / add / reset password  (admin)
+      users/[id]            enable, disable, change role (admin)
       map                   upload / inspect / clear the bin map
       checks                record an audit scan, list recent, tallies
       checks/[id]           undo
@@ -227,8 +248,9 @@ src/
 scripts/
   migrate.mjs               schema, safe to re-run
   create-user.mjs           add or update a user
-  print-server.mjs          local relay: USB or network Zebra
-  test.ts                   115 logic tests, no database needed
+  print-server.cjs          local relay: USB or network Zebra
+  build-exe.mjs             packages the relay as a standalone .exe
+  test.ts                   148 logic tests, no database needed
 standalone/                 the offline single-file version this grew from
 ```
 
@@ -260,8 +282,14 @@ HTTP-only signed cookie lasting 12 hours (one shift). All Web Crypto, so it
 runs on both Node and Edge with no dependency and no external auth service.
 
 Two roles: `scanner` can scan, audit, and undo their own work; `admin` can also
-create sites, generate label sets, load or clear the bin map, and undo anyone's
-pair or check.
+create sites, generate label sets, load or clear the bin map, manage accounts,
+and undo anyone's pair or check.
+
+Accounts are managed from the **Admin** tab, or from the command line. They are
+disabled rather than deleted, because `pairs.user_id` and `checks.user_id` point
+at them and being able to say who scanned what is most of the point. The last
+active admin cannot be disabled or demoted - otherwise nobody could add users or
+generate labels, and the only way back would be the CLI.
 
 ```bash
 npm run user -- <username> <password> [scanner|admin]
@@ -283,7 +311,7 @@ Re-running with an existing username resets that password.
 npm test
 ```
 
-115 tests over bin parsing (both old formats), label generation (every basis,
+148 tests over bin parsing (both old formats), label generation (every basis,
 floor-level `Z`, 26-letter overflow, positions within a shelf), zone ranges,
 pair validation (every refusal case), bin map parsing (headers, blanks,
 duplicates, collisions, malformed codes), audit verdicts, CSV/TSV input,

@@ -29,6 +29,15 @@ type Pair = {
 }
 type Loc = { zone: string; aisle: number; col: number | null }
 type Source = 'map' | 'pairs'
+type AppUser = {
+  id: number
+  username: string
+  role: string
+  active: boolean
+  created_at: string
+  pairs: number
+  checks: number
+}
 type Check = {
   id: number
   old_bin: string
@@ -130,7 +139,7 @@ function Login({ onIn }: { onIn: (u: User) => void }) {
 /* ------------------------------------------------------------------ */
 
 function Main({ user, onOut }: { user: User; onOut: () => void }) {
-  const [tab, setTab] = useState<'scan' | 'val' | 'labels' | 'rec'>('scan')
+  const [tab, setTab] = useState<'scan' | 'val' | 'labels' | 'rec' | 'admin'>('scan')
   const [sites, setSites] = useState<Site[]>([])
   const [siteId, setSiteId] = useState<number | null>(null)
   const [err, setErr] = useState('')
@@ -213,11 +222,18 @@ function Main({ user, onOut }: { user: User; onOut: () => void }) {
         <button className={tab === 'rec' ? 'on' : ''} onClick={() => setTab('rec')}>
           Reconcile
         </button>
+        {user.role === 'admin' && (
+          <button className={tab === 'admin' ? 'on' : ''} onClick={() => setTab('admin')}>
+            Admin
+          </button>
+        )}
       </nav>
 
       <main>
         {err && <div className="msg show bad">{err}</div>}
-        {!siteId ? (
+        {tab === 'admin' ? (
+          <Admin user={user} />
+        ) : !siteId ? (
           <div className="card">
             <h2>No site yet</h2>
             <p className="hint">
@@ -719,10 +735,11 @@ function Print({ siteId }: { siteId: number }) {
   const [status, setStatus] = useState<{ ok: boolean; target?: string; mode?: string } | null>(null)
   const [dpi, setDpi] = useState<203 | 300>(203)
   const [symbology, setSymbology] = useState<Symbology>('code39')
-  // 3in emits the site's own format untouched, which is drawn for 3in stock
-  // and inherits the printer's settings. 4in measures the same design out
-  // against the wider label, or a third of it prints empty.
-  const [stock, setStock] = useState<'3' | '4'>('4')
+  // The site's own format is a 4in format - its padded 14-character symbol at
+  // ^BY03,3 is 765 dots and needs the 812-dot head. 'site' emits it untouched
+  // and lets the printer's own stock settings stand; the other two measure the
+  // same design out against the label they are given.
+  const [stock, setStock] = useState<'site' | '4' | '3'>('site')
   const [prefix, setPrefix] = useState('A     ')
   const [copies, setCopies] = useState('1')
   const [darkness, setDarkness] = useState('0')
@@ -735,7 +752,7 @@ function Print({ siteId }: { siteId: number }) {
   const spec: LabelSpec = {
     dpi,
     widthIn: stock === '3' ? 3 : 4,
-    heightIn: 220 / 203,
+    heightIn: 220 / 203, // the GX420d reports LABEL LENGTH 0220 for this stock
     darkness: Number(darkness) || 0,
     speed: Number(speed) || 4,
     copies: Math.max(1, Number(copies) || 1),
@@ -745,7 +762,7 @@ function Print({ siteId }: { siteId: number }) {
     textWidthRatio: 98 / 84,
     gapRatio: 0.01,
     marginRatio: 0.047,
-    template: stock === '3' ? ('sample' as const) : ('scaled' as const),
+    template: stock === 'site' ? ('sample' as const) : ('scaled' as const),
     // Matches what the racks already carry. normalizeScan strips it back off
     // whatever a scanner returns, so old and new labels behave the same.
     barcodePrefix: prefix,
@@ -839,9 +856,10 @@ function Print({ siteId }: { siteId: number }) {
       <div className="row">
         <div>
           <label>Label stock</label>
-          <select value={stock} onChange={e => setStock(e.target.value as '3' | '4')}>
-            <option value="4">4 x 1 in — scaled to fill</option>
-            <option value="3">3 x 1 in — the site format, verbatim</option>
+          <select value={stock} onChange={e => setStock(e.target.value as 'site' | '4' | '3')}>
+            <option value="site">4 x 1 in — the site format, exactly</option>
+            <option value="4">4 x 1 in — scaled to fill the label</option>
+            <option value="3">3 x 1 in</option>
           </select>
         </div>
         <div>
@@ -918,6 +936,14 @@ function Print({ siteId }: { siteId: number }) {
         </button>
         {busy && <span className="spin" />}
       </div>
+
+      <p className="hint" style={{ marginTop: 10 }}>
+        {stock === 'site'
+          ? 'Emits the ZPL the site already prints with, command for command, and inherits whatever stock the printer is set to.'
+          : stock === '4'
+            ? 'The same design measured against a 4 x 1 in label, so the line and bars fill it rather than stopping two thirds across.'
+            : 'Measured against a 3 x 1 in label. The barcode drops a module width to fit, which is the most that will go on that stock.'}
+      </p>
 
       {selected.length > 0 && (
         <p className="hint" style={{ marginTop: 10 }}>
@@ -1565,6 +1591,183 @@ function Validate({ siteId, siteName, user }: { siteId: number; siteName: string
             </tbody>
           </table>
         </div>
+      </div>
+    </>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * Admin - who can sign in, and what they may do.
+ *
+ * Accounts are never deleted, only deactivated: `pairs.user_id` and
+ * `checks.user_id` point at them, and being able to say who scanned what is
+ * most of the point of the app.
+ */
+function Admin({ user }: { user: User }) {
+  const [users, setUsers] = useState<AppUser[]>([])
+  const [name, setName] = useState('')
+  const [pw, setPw] = useState('')
+  const [role, setRole] = useState('scanner')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api('/api/users')
+      setUsers(d.users)
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    }
+  }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const existing = users.find(u => u.username.toLowerCase() === name.trim().toLowerCase())
+
+  const save = async () => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const { user: saved } = await api('/api/users', {
+        method: 'POST',
+        body: JSON.stringify({ username: name.trim(), password: pw, role }),
+      })
+      setMsg({
+        kind: 'ok',
+        text: existing
+          ? `Password reset for ${saved.username}, role ${saved.role}.`
+          : `${saved.username} added as ${saved.role}.`,
+      })
+      setName('')
+      setPw('')
+      await load()
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const patch = async (u: AppUser, body: { active?: boolean; role?: string }) => {
+    setMsg(null)
+    try {
+      await api(`/api/users/${u.id}`, { method: 'PATCH', body: JSON.stringify(body) })
+      await load()
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  return (
+    <>
+      <div className="card">
+        <h2>{existing ? 'Reset a password' : 'Add someone'}</h2>
+        <p className="hint">
+          A username that already exists has its password reset and its role updated — the same behaviour as{' '}
+          <code>npm run user</code>. Six characters minimum.
+        </p>
+        {msg && <div className={`msg show ${msg.kind}`}>{msg.text}</div>}
+        <div className="row">
+          <div style={{ flex: '1 1 200px' }}>
+            <label>Username</label>
+            <input value={name} onChange={e => setName(e.target.value)} autoComplete="off" />
+          </div>
+          <div style={{ flex: '1 1 200px' }}>
+            <label>Password</label>
+            <input type="password" value={pw} onChange={e => setPw(e.target.value)} autoComplete="new-password" />
+          </div>
+          <div>
+            <label>Role</label>
+            <select value={role} onChange={e => setRole(e.target.value)}>
+              <option value="scanner">Scanner — scan, audit, undo their own</option>
+              <option value="admin">Admin — also sites, labels, maps, accounts</option>
+            </select>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+            <button className="act" onClick={save} disabled={busy || !name.trim() || pw.length < 6}>
+              {busy ? 'Saving…' : existing ? 'Reset password' : 'Add user'}
+            </button>
+          </div>
+        </div>
+        {existing && (
+          <div className="msg show warn">
+            {existing.username} already exists — saving resets their password and sets their role.
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <h2>Accounts</h2>
+        <div className="scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>USER</th>
+                <th>ROLE</th>
+                <th>STATE</th>
+                <th>PAIRS</th>
+                <th>AUDITS</th>
+                <th>ADDED</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map(u => (
+                <tr key={u.id}>
+                  <td>
+                    <b>{u.username}</b>
+                    {u.username === user.name && (
+                      <span className="pill ok" style={{ marginLeft: 6 }}>
+                        you
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <select
+                      value={u.role}
+                      onChange={e => patch(u, { role: e.target.value })}
+                      style={{ width: 'auto', padding: '2px 6px' }}
+                    >
+                      <option value="scanner">scanner</option>
+                      <option value="admin">admin</option>
+                    </select>
+                  </td>
+                  <td>
+                    <span className={`pill ${u.active ? 'ok' : 'bad'}`}>{u.active ? 'active' : 'disabled'}</span>
+                  </td>
+                  <td>{u.pairs.toLocaleString()}</td>
+                  <td>{u.checks.toLocaleString()}</td>
+                  <td>{new Date(u.created_at).toLocaleDateString()}</td>
+                  <td>
+                    <button
+                      className="act ghost"
+                      style={{ padding: '3px 9px' }}
+                      onClick={() => patch(u, { active: !u.active })}
+                    >
+                      {u.active ? 'Disable' : 'Enable'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!users.length && (
+                <tr>
+                  <td colSpan={7} style={{ color: 'var(--muted)' }}>
+                    No accounts loaded.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <p className="hint" style={{ marginTop: 10 }}>
+          Accounts are disabled rather than deleted, so the record of who scanned what survives. The last active
+          admin cannot be disabled or demoted — otherwise nobody could add users or generate labels, and the only
+          way back would be the command line.
+        </p>
       </div>
     </>
   )
