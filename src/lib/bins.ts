@@ -22,6 +22,22 @@ export function parseOld(raw: string): OldBin | null {
   return null
 }
 
+/**
+ * What a scanner hands us, reduced to the bin code.
+ *
+ * The labels hung at this site encode a six-character field before the code -
+ * `A     A2707G05` - so a scan returns all fourteen characters. The code is
+ * whatever follows the last space, which leaves an unpadded scan untouched and
+ * means a rack carrying both old and new labels behaves identically. Anything
+ * with an internal space would otherwise fail the format gate and be recorded
+ * as unmapped, which looks exactly like a missing bin.
+ */
+export function normalizeScan(raw: string): string {
+  const t = String(raw ?? '').trim().toUpperCase()
+  const i = t.lastIndexOf(' ')
+  return i === -1 ? t : t.slice(i + 1).trim()
+}
+
 const pad2 = (n: number) => String(n).padStart(2, '0')
 
 /**
@@ -34,13 +50,16 @@ export function newCode(zone: string, aisle: number, col: number, letter: string
 }
 
 /**
- * How a code is shown to a human: a dash after the zone and aisle, so
+ * How a code is shown to a human: a separator after the zone and aisle, so
  * A0000A01 reads as A00-00A01. Display only - the barcode carries the code
  * itself, undashed, or a scan will not match anything in the database.
+ *
+ * The printed label spaces the separator out (`L03 - 12K01`) because that is
+ * what the racks at this site already carry; the screen uses the tight form.
  */
-export function displayCode(code: string) {
+export function displayCode(code: string, separator = '-') {
   const c = String(code ?? '').trim().toUpperCase()
-  return c.length > 3 ? `${c.slice(0, 3)}-${c.slice(3)}` : c
+  return c.length > 3 ? `${c.slice(0, 3)}${separator}${c.slice(3)}` : c
 }
 
 export function splitNew(code: string) {

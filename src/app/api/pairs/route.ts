@@ -1,7 +1,7 @@
 import { db, isUniqueViolation } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { json, fail } from '@/lib/api'
-import { validatePair } from '@/lib/bins'
+import { validatePair, normalizeScan } from '@/lib/bins'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -62,8 +62,10 @@ export async function POST(req: Request) {
       location?: string | null
     }
     const siteId = Number(body.siteId)
-    const oldBin = String(body.oldBin ?? '').trim().toUpperCase()
-    const newBin = String(body.newBin ?? '').trim().toUpperCase()
+    // normalizeScan, not just trim: labels here encode a padded field ahead
+    // of the code, so a scan arrives as `A     A0101B01`.
+    const oldBin = normalizeScan(body.oldBin ?? '')
+    const newBin = normalizeScan(body.newBin ?? '')
     if (!siteId) return json({ error: 'site is required' }, 400)
 
     const why = validatePair(oldBin, newBin, { enforceFormat: true, location: null })

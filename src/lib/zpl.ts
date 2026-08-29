@@ -15,6 +15,18 @@
 // does not resolve extensionless relative imports. Next handles either.
 import { displayCode } from './bins.ts'
 
+/**
+ * Code 39 is what warehouse location labels are usually printed in, and it is
+ * what the racks already hung at this site carry - 5 bars per character with
+ * an even rhythm, against Code 128's tighter, blockier pattern. It only
+ * encodes A-Z, 0-9 and a few symbols, which is exactly what a bin code is, and
+ * it is self-checking so it needs no check digit.
+ *
+ * Code 128 is kept because it is roughly a third narrower for the same data,
+ * which matters if a code ever gets longer.
+ */
+export type Symbology = 'code39' | 'code128'
+
 export type LabelSpec = {
   /** Printer resolution. 203 covers ZD420/ZD620/ZT230; 300 covers the -300 models. */
   dpi: 203 | 300
@@ -27,15 +39,168 @@ export type LabelSpec = {
   speed: number
   /** How many of each label. */
   copies: number
+  /**
+   * Narrow-bar width in dots. Omit to size the barcode to fill the label,
+   * which is what the racks already carry - a bin label is read from a couple
+   * of feet up a rack, and a wide module is the difference between a scan and
+   * a second attempt.
+   */
+  moduleW?: number
+  /** What goes between zone-aisle and the rest on the printed line. */
+  separator: string
+  symbology: Symbology
+  /** Code 39 wide-bar to narrow-bar ratio. 2 to 3; ignored by Code 128. */
+  ratio: number
+  /**
+   * Glyph width as a fraction of glyph height. Font 0 is Bold *Condensed*, so
+   * left to itself it prints narrow; pushing this up is what makes the line
+   * read from down an aisle. Shrinks automatically rather than overrunning
+   * the label when a code is long.
+   */
+  textWidthRatio: number
+  /** Space between the line and the bars, as a fraction of label height. */
+  gapRatio: number
+  /**
+   * Share of the usable height given to the line rather than the bars.
+   *
+   * Font 0 renders a cap of roughly 0.62 of the height it is asked for - the
+   * rest is leading inside the character cell - so the line needs a bigger
+   * share than it looks like it should to end up level with the bars.
+   */
+  textShare?: number
+  /** Edge margin as a fraction of label height. The stock has little to spare. */
+  marginRatio: number
+  /**
+   * 'sample' emits the site's existing format verbatim, inheriting the
+   * printer's stock. 'scaled' lays the same design out against ^PW/^LL, for
+   * stock the existing format was not drawn for.
+   */
+  template: 'sample' | 'scaled'
+  /**
+   * Put in front of the code inside the barcode, and nowhere else.
+   *
+   * The site's labels encode `A     A2707G05` - a six-character left-justified
+   * field, then the bin code. The human-readable line carries no such thing.
+   * Match it and new labels scan the same as the ones already hung; a scanner
+   * returns the whole string either way, which is why `normalizeScan` in
+   * bins.ts takes what follows the last space.
+   */
+  barcodePrefix: string
 }
 
 export const DEFAULT_LABEL: LabelSpec = {
   dpi: 203,
   widthIn: 4,
-  heightIn: 1,
-  darkness: 10,
+  // 220 dots, not 203. The GX420d on the floor reports LABEL LENGTH 0220 for
+  // this stock, and forcing ^LL203 laid the content into the top 203 dots and
+  // left a dead strip along the bottom.
+  heightIn: 220 / 203,
+  darkness: 0,
   speed: 4,
   copies: 1,
+  separator: '-',
+  symbology: 'code39',
+  ratio: 3,
+  textWidthRatio: 98 / 84,
+  gapRatio: 0.01,
+  marginRatio: 0.047,
+  template: 'sample',
+  barcodePrefix: 'A     ',
+}
+
+/**
+ * The format the site already prints with, reproduced command for command.
+ *
+ * Everything before the first label is setup the printer keeps: ^JMA sets full
+ * resolution, ^MNY web/gap media tracking, ^MMT tear-off, ^MD+00 leaves the
+ * printer's own darkness alone (the GX420d on the floor holds 26.0), ^PRC is
+ * 4ips, the two ^IDR lines clear stored graphics, and ^ISLB saves the empty
+ * format that every label then loads with ^ILLB.
+ *
+ * There is deliberately no ^PW or ^LL: the format inherits whatever stock the
+ * printer is configured for, which is how the existing labels are produced and
+ * why copying its dot values onto different stock came out wrong.
+ *
+ * One departure. The sample's barcode field reads `^FDA    A2707G05` - the
+ * code with a letter and four spaces in front of it. Code 39 encodes spaces,
+ * so a scan of that returns `A    A2707G05`, which matches nothing in `pairs`,
+ * `labels` or `bin_map`. Only the bin code goes in here.
+ */
+const SAMPLE_PREAMBLE = [
+  // ~CC resets the format prefix to ^. The site's own file opens with `~CC¬`,
+  // which switches the printer to `¬` and *stays* switched - so after their
+  // label program has run, a plain ^XA from here is ignored outright. ~ is the
+  // control prefix and is unaffected either way, so this always lands.
+  '~CC^',
+  '^XA^JMA^FS^XZ',
+  '^XA^MNY^FS^XZ',
+  '^XA^MMT^FS^XZ',
+  '^XA^MD+00^FS^XZ',
+  '^XA^PRC^FS^XZ',
+  '^XA^IDR:*.GRF^XZ',
+  '^XA^IDR:*.*^XZ',
+  '^XA^MCY^XZ',
+  '^XA^LH0000,0000^FS^PON^FS',
+  '^ISLB,N^FS^XZ',
+].join('\n')
+
+const pad4 = (n: number) => String(Math.max(1, Math.floor(n))).padStart(4, '0')
+
+function sampleBody(code: string, shown: string, copies: number, prefix: string): string {
+  return [
+    '^XA^MCY^XZ^XA^ILLB^FS',
+    '^FO0000,0000^AAN,0000,0000^FD ^FS',
+    `^FO0038,0084^BY03,3,100^B3N,N,0100,N,N^FD${prefix}${code}^FS`,
+    `^FO0038,0012^A0N,0084,0098^FD${shown}^FS`,
+    `^PQ${pad4(copies)},0000,0000,N^FS^MCY^XZ`,
+  ].join('\n')
+}
+
+/**
+ * Modules a Code 39 symbol occupies. Every character is 9 elements - 6 narrow
+ * and 3 wide - plus a one-module gap before the next, and the `*` start and
+ * stop characters are two more characters on the wire.
+ */
+export function code39Modules(data: string, ratio = 2): number {
+  return (data.length + 2) * (7 + 3 * ratio) - 1
+}
+
+/** Width in narrow-bar modules, whichever symbology is in use. */
+export function barcodeModules(data: string, spec: LabelSpec): number {
+  return spec.symbology === 'code39' ? code39Modules(data, spec.ratio) : code128Modules(data)
+}
+
+/**
+ * Modules a Code 128 symbol will occupy, near enough to lay out against.
+ *
+ * Every symbol is 11 modules, plus a 13-module stop. The encoder drops into
+ * subset C for runs of four or more digits, halving them, so the estimate has
+ * to model that or a mostly-numeric code comes out far wider than predicted.
+ */
+export function code128Modules(data: string): number {
+  let symbols = 2 // start + check digit
+  let i = 0
+  let inC = false
+  while (i < data.length) {
+    const run = /^\d+/.exec(data.slice(i))?.[0]?.length ?? 0
+    if (run >= 4) {
+      const pairs = Math.floor(run / 2)
+      if (!inC) {
+        symbols++ // switch to subset C
+        inC = true
+      }
+      symbols += pairs
+      i += pairs * 2
+    } else {
+      if (inC) {
+        symbols++ // back to subset B
+        inC = false
+      }
+      symbols++
+      i++
+    }
+  }
+  return symbols * 11 + 13
 }
 
 /**
@@ -46,40 +211,111 @@ export const DEFAULT_LABEL: LabelSpec = {
  */
 export function zplLabel(code: string, spec: LabelSpec = DEFAULT_LABEL): string {
   const c = String(code ?? '').trim().toUpperCase()
-  const shown = displayCode(c)
+  const shown = displayCode(c, spec.separator ?? '-')
+
+  if ((spec.template ?? 'sample') === 'sample') {
+    return `${SAMPLE_PREAMBLE}\n${sampleBody(esc(c), esc(shown), spec.copies, spec.barcodePrefix ?? '')}`
+  }
 
   const w = Math.round(spec.widthIn * spec.dpi)
   const h = Math.round(spec.heightIn * spec.dpi)
 
-  // Leave a margin all round; thermal heads drift a little and a barcode that
-  // touches the edge is a barcode that sometimes will not scan.
-  const margin = Math.round(spec.dpi * 0.1)
-  const textH = Math.round(spec.dpi * 0.28)
-  const barH = h - textH - margin * 2 - Math.round(spec.dpi * 0.05)
+  // Geometry lifted from the ZPL the racks at this site were printed with:
+  //
+  //   ^FO0038,0084^BY03,3,100^B3N,N,0100,N,N^FD...^FS
+  //   ^FO0038,0012^A0N,0084,0098^FD A27-07G05 ^FS
+  //
+  // Both fields start at the same x, the line sits at y=12 with a height of
+  // 84, and the bars start at y=84 - overlapping the line's cell, because a
+  // font cell is taller than the glyphs inside it. Held as fractions so the
+  // same layout survives a different stock size or a 300dpi head.
+  const margin = Math.round(w * (spec.marginRatio ?? 0.047))
+  const usable = w - margin * 2
 
-  // Narrow bar width. 2 dots at 203 dpi is ~0.0098in, comfortably above the
-  // 0.0075in that most scanners give up below.
-  const moduleW = spec.dpi >= 300 ? 3 : 2
+  // Fill the width unless told otherwise. Floor of 2 dots keeps the narrow bar
+  // above 0.0098in at 203dpi, comfortably clear of the 0.0075in where cheap
+  // scanners start to give up; 8 is as wide as is worth going.
+  // The bars get more room than the text does. The site format starts them at
+  // x=38 and runs to 803 of an 812-dot head - a 9-dot right margin, not a
+  // matching 38 - and a symbol sized against the narrower figure drops a whole
+  // module width.
+  const barUsable = w - margin - Math.round(w * 0.011)
+  const modules = barcodeModules(esc(spec.barcodePrefix ?? '') + esc(c), spec)
+  const moduleW = clamp(spec.moduleW ?? Math.floor(barUsable / modules), 2, 8)
+
+  // Font 0 is proportional: the width parameter is the widest a glyph may be,
+  // not the advance. Measured against the sample, the line comes out at about
+  // 0.62 of width-times-characters, which is what the fit check has to use -
+  // treating the width as an advance shrinks the text for no reason.
+  const widthRatio = spec.textWidthRatio ?? 98 / 84
+  const textY = Math.round(h * 0.059)
+  const barY = Math.round(h * 0.414)
+  const barH = Math.round(h * 0.493)
+
+  // Grow the line to fill the stock rather than pinning it to the sample's
+  // dot values. The sample carries no ^PW or ^LL, so it inherits whatever
+  // width the printer is set to - its 84x98 fills a 3in label, and the same
+  // numbers on 4in stock leave a third of the label empty. Fed 3in stock this
+  // arrives back at 84x98 on its own.
+  const PROPORTIONAL = 0.62 // font 0 is proportional; advance is well under the width parameter
+  let textW = spec.textShare
+    ? Math.round(h * spec.textShare * widthRatio)
+    : Math.floor(usable / (Math.max(1, shown.length) * PROPORTIONAL))
+  let textH = Math.round(textW / widthRatio)
+
+  // The glyphs have to stop before the bars start. Only the cap matters, and
+  // that is about 0.62 of the cell the font is given.
+  const maxTextH = Math.floor((barY - textY) / PROPORTIONAL)
+  if (textH > maxTextH) {
+    textH = maxTextH
+    textW = Math.round(textH * widthRatio)
+  }
+
+  // The sample left-aligns the bars with the line rather than centring them.
+  // With a symbol this wide the difference is a few dots either way.
+  const barW = modules * moduleW
+  const barX = margin
+
+  // Code 39 wants ^B3, Code 128 wants ^BC. Same arguments either way:
+  // orientation, height, no interpretation line (there is one already).
+  const barcode =
+    spec.symbology === 'code39'
+      ? `^B3N,N,${barH},N,N^FD${esc(spec.barcodePrefix ?? '')}${esc(c)}^FS`
+      : `^BCN,${barH},N,N,N^FD${esc(spec.barcodePrefix ?? '')}${esc(c)}^FS`
 
   return [
     '^XA',
     `^PW${w}`, // print width
     `^LL${h}`, // label length
     '^LH0,0',
+    '^PON', // normal orientation, as the sample sets
     `^MD${clamp(spec.darkness, 0, 30)}`,
     `^PR${clamp(spec.speed, 1, 14)}`,
     '^CI28', // UTF-8, so a stray character cannot corrupt the stream
-    `^BY${moduleW},3,${barH}`,
-    `^FO${margin},${margin}^BCN,${barH},N,N,N^FD${esc(c)}^FS`,
-    // Human-readable line, centred across the full width.
-    `^FO0,${margin + barH + Math.round(spec.dpi * 0.05)}^FB${w},1,0,C,0^A0N,${textH},${textH}^FD${esc(shown)}^FS`,
+    `^FO${margin},${textY}^A0N,${textH},${textW}^FD${esc(shown)}^FS`,
+    `^BY${moduleW},${clamp(spec.ratio ?? 3, 2, 3)},${barH}`,
+    `^FO${barX},${barY}${barcode}`,
     `^PQ${Math.max(1, Math.floor(spec.copies))}`,
     '^XZ',
   ].join('\n')
 }
 
-/** A whole run, ready to send. */
+/**
+ * A whole run, ready to send.
+ *
+ * The preamble is printer setup, not part of any label: it clears stored
+ * graphics and re-saves the format. Repeating it per label across a run of
+ * thousands would do that thousands of times, so it goes out once and each
+ * label is just its own body.
+ */
 export function zplBatch(codes: string[], spec: LabelSpec = DEFAULT_LABEL): string {
+  if ((spec.template ?? 'sample') === 'sample') {
+    const bodies = codes.map(c => {
+      const u = String(c ?? '').trim().toUpperCase()
+      return sampleBody(esc(u), esc(displayCode(u, spec.separator ?? '-')), spec.copies, spec.barcodePrefix ?? '')
+    })
+    return [SAMPLE_PREAMBLE, ...bodies].join('\n') + '\n'
+  }
   return codes.map(c => zplLabel(c, spec)).join('\n') + '\n'
 }
 
@@ -90,7 +326,12 @@ export function zplBatch(codes: string[], spec: LabelSpec = DEFAULT_LABEL): stri
  * own - so it is checked rather than assumed.
  */
 function esc(s: string): string {
+  // Spaces are deliberately kept: the barcode prefix is made of them.
   return s.replace(/[\^~]/g, '')
+}
+
+function clamp01(n: number): number {
+  return Math.min(0.85, Math.max(0.2, n))
 }
 
 function clamp(n: number, lo: number, hi: number): number {

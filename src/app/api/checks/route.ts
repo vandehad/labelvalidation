@@ -1,7 +1,7 @@
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { json, fail } from '@/lib/api'
-import { verdictFor } from '@/lib/bins'
+import { verdictFor, normalizeScan } from '@/lib/bins'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -76,8 +76,9 @@ export async function POST(req: Request) {
     }
     const siteId = Number(body.siteId)
     const source = sourceOf(body.source)
-    const oldBin = String(body.oldBin ?? '').trim().toUpperCase()
-    const newBin = String(body.newBin ?? '').trim().toUpperCase()
+    // See /api/pairs: the barcode carries a padded field before the code.
+    const oldBin = normalizeScan(body.oldBin ?? '')
+    const newBin = normalizeScan(body.newBin ?? '')
     if (!siteId) return json({ error: 'site is required' }, 400)
     if (!source) return json({ error: 'source must be map or pairs' }, 400)
     if (!oldBin || !newBin) return json({ error: 'Both fields are needed.' }, 422)

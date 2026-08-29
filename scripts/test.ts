@@ -13,11 +13,12 @@ import {
   verdictFor,
   displayCode,
   parseZones,
+  normalizeScan,
 } from '../src/lib/bins.ts'
 import { makeXlsx } from '../src/lib/xlsx.ts'
 import { parseDelimited, readXlsxRows } from '../src/lib/sheet.ts'
 import { pickDatabaseUrl } from '../src/lib/dburl.mjs'
-import { zplLabel, zplBatch, DEFAULT_LABEL } from '../src/lib/zpl.ts'
+import { zplLabel, zplBatch, DEFAULT_LABEL, code128Modules, code39Modules, barcodeModules } from '../src/lib/zpl.ts'
 import { writeFileSync, unlinkSync } from 'node:fs'
 
 let pass = 0
@@ -204,30 +205,117 @@ ok('dash goes after the third character', displayCode('A0000A01') === 'A00-00A01
 ok('display uppercases', displayCode('a0102c01') === 'A01-02C01')
 ok('short strings are left alone', displayCode('AB') === 'AB')
 
-/* ---------- zpl ---------- */
-const z = zplLabel('A0102C01')
-ok('zpl is one label', (z.match(/\^XA/g) ?? []).length === 1 && z.trim().endsWith('^XZ'))
-ok('barcode carries the undashed code', z.includes('^FDA0102C01^FS'))
-ok('human line carries the dashed one', z.includes('^FDA01-02C01^FS'))
-// Pin the barcode's own ^FD, not merely "some ^FD after ^BCN" - a lazy match
-// runs straight past it into the human-readable line, which does have a dash.
-const barcodeData = /\^BCN[^^]*\^FD([^^]*)\^FS/.exec(z)?.[1]
-ok('barcode field holds exactly the stored code', barcodeData === 'A0102C01')
+/* ---------- zpl: the format the site already prints ---------- */
+// Byte for byte the site's own export, with `^` for its `¬` and only the code
+// substituted. Their file is the specification, so this is a fixture rather
+// than a calculation - if it drifts, new labels stop matching the racks.
+const SAMPLE = [
+  '~CC^',
+  '^XA^JMA^FS^XZ',
+  '^XA^MNY^FS^XZ',
+  '^XA^MMT^FS^XZ',
+  '^XA^MD+00^FS^XZ',
+  '^XA^PRC^FS^XZ',
+  '^XA^IDR:*.GRF^XZ',
+  '^XA^IDR:*.*^XZ',
+  '^XA^MCY^XZ',
+  '^XA^LH0000,0000^FS^PON^FS',
+  '^ISLB,N^FS^XZ',
+  '^XA^MCY^XZ^XA^ILLB^FS',
+  '^FO0000,0000^AAN,0000,0000^FD ^FS',
+  '^FO0038,0084^BY03,3,100^B3N,N,0100,N,N^FDA     A2707G05^FS',
+  '^FO0038,0012^A0N,0084,0098^FDA27-07G05^FS',
+  '^PQ0001,0000,0000,N^FS^MCY^XZ',
+].join('\n')
+
+ok('reproduces the site format exactly', zplLabel('A2707G05') === SAMPLE)
+ok('no ^PW or ^LL - the printer stock decides', !zplLabel('A2707G05').includes('^PW'))
+// Their file opens with ~CC¬, which switches the format prefix and leaves it
+// switched. Without resetting it, a plain ^XA after their program has run is
+// ignored by the printer.
+ok('resets the format prefix', zplLabel('A2707G05').startsWith('~CC^'))
+ok('barcode carries the padded field then the code', zplLabel('A2707G05').includes('^FDA     A2707G05^FS'))
+ok('the padding is six characters', 'A     '.length === 6)
+ok('line carries the dashed code and no padding', zplLabel('A2707G05').includes('^FDA27-07G05^FS'))
+ok('the prefix can be turned off', zplLabel('A2707G05', { ...DEFAULT_LABEL, barcodePrefix: '' }).includes('^FDA2707G05^FS'))
+ok('copies land in ^PQ', zplLabel('A2707G05', { ...DEFAULT_LABEL, copies: 12 }).includes('^PQ0012,'))
+ok('darkness is left to the printer', zplLabel('A2707G05').includes('^MD+00'))
+ok('code 39, no check digit, no interpretation line', zplLabel('A2707G05').includes('^B3N,N,0100,N,N'))
+ok('^ and ~ are stripped from data', !zplLabel('A^27~0G05').includes('^27~0'))
+// 14 characters at ^BY03,3 is 765 dots, ending at 803 of an 812-dot head.
+ok('the padded symbol still fits the head', code39Modules('A     A2707G05', 3) * 3 + 38 <= 812)
+ok('one more character would not', code39Modules('A      A2707G05', 3) * 3 + 38 > 812)
+
+// A batch is the setup once, then a body per label - repeating ^IDR across
+// thousands would re-clear stored graphics on every single one.
+const zbatch = zplBatch(['A0101A01', 'A0101B01', 'A0101C01'])
+ok('zbatch sends the preamble once', (zbatch.match(/\^IDR:\*\.GRF/g) ?? []).length === 1)
+ok('zbatch has one body per label', (zbatch.match(/\^ILLB/g) ?? []).length === 3)
+ok('zbatch pads every barcode', (zbatch.match(/\^FDA {5}A0101/g) ?? []).length === 3)
+ok('zbatch keeps every dashed line', zbatch.includes('^FDA01-01A01^FS'))
+
+/* ---------- what a scanner hands back ---------- */
+// The label encodes `A     A0101B01`, so the gun returns all fourteen
+// characters. Everything after the last space is the bin code.
+ok('padding is stripped', normalizeScan('A     A0101B01') === 'A0101B01')
+ok('an unpadded scan is untouched', normalizeScan('A0101B01') === 'A0101B01')
+ok('an old bin is untouched', normalizeScan('A-1-1-1') === 'A-1-1-1')
+ok('surrounding space is trimmed', normalizeScan('  A0101B01  ') === 'A0101B01')
+ok('lowercase is lifted', normalizeScan('a     a0101b01') === 'A0101B01')
+ok('empty stays empty', normalizeScan('') === '')
+ok('only spaces is empty', normalizeScan('     ') === '')
+// The whole point: a padded scan has to pass the same gate an unpadded one does.
+ok(
+  'a padded scan passes the format gate',
+  validatePair('A-1-1-1', normalizeScan('A     A0101C01'), { enforceFormat: true, location: null }) === null,
+)
+ok(
+  'and would not have without it',
+  !!validatePair('A-1-1-1', 'A     A0101C01', { enforceFormat: true, location: null }),
+)
+
+/* ---------- zpl: laid out against other stock ---------- */
+// The site format has no ^PW/^LL and its dot values suit its own stock. For
+// anything else the same design is measured out against the label size.
+const SCALED = { ...DEFAULT_LABEL, template: 'scaled' as const }
+const z = zplLabel('A0102C01', SCALED)
+ok('scaled is one label', (z.match(/\^XA/g) ?? []).length === 1 && z.trim().endsWith('^XZ'))
+ok('scaled states the stock', z.includes('^PW812') && z.includes('^LL220'))
+const barcodeData = /\^B[3C]N[^^]*\^FD([^^]*)\^FS/.exec(z)?.[1]
+ok('barcode field is the padding then the code', barcodeData === 'A     A0102C01')
 ok('the dash is never inside the barcode field', !barcodeData?.includes('-'))
-ok('code 128 requested', z.includes('^BCN,'))
-ok('width is 4in at 203dpi', z.includes('^PW812'))
-ok('length is 1in at 203dpi', z.includes('^LL203'))
-ok('utf-8 declared', z.includes('^CI28'))
-const z300 = zplLabel('A0102C01', { ...DEFAULT_LABEL, dpi: 300 })
-ok('300dpi widens the label', z300.includes('^PW1200') && z300.includes('^LL300'))
-ok('300dpi widens the bar module', z300.includes('^BY3,'))
-const zc = zplLabel('A0102C01', { ...DEFAULT_LABEL, copies: 3 })
-ok('copies requested', zc.includes('^PQ3'))
-ok('darkness is clamped', zplLabel('A0102C01', { ...DEFAULT_LABEL, darkness: 99 }).includes('^MD30'))
-ok('control characters are stripped from data', !zplLabel('A^0102~C01').includes('^0102~C01'))
-const many = zplBatch(['A0101A01', 'A0101B01', 'A0101C01'])
-ok('a batch is one block per label', (many.match(/\^XA/g) ?? []).length === 3)
-ok('batch keeps every code', ['A0101A01', 'A0101B01', 'A0101C01'].every(c => many.includes('^FD' + c + '^FS')))
+ok('and without padding it is just the code', /\^B3N[^^]*\^FD([^^]*)\^FS/.exec(zplLabel('A0102C01', { ...SCALED, barcodePrefix: '' }))?.[1] === 'A0102C01')
+ok('code 39 by default', z.includes('^B3N,'))
+ok('code 128 on request', zplLabel('A0102C01', { ...SCALED, symbology: 'code128' }).includes('^BCN,'))
+const zi = zplLabel('L0312K01', SCALED)
+const barX = Number(/\^FO(\d+),\d+\^B[3C]/.exec(zi)![1])
+const textX = Number(/\^FO(\d+),\d+\^A0N/.exec(zi)![1])
+ok('bars and line start at the same x', barX === textX)
+ok('text is printed before the barcode', zi.indexOf('^A0N') < zi.indexOf('^B3N'))
+// The site format is a 4in format after all: its 14-character symbol at
+// ^BY03,3 is 765 dots, which needs the 812-dot head. Sized against the same
+// stock the scaled path picks the same module width.
+const derived = zplLabel('A2707G05', SCALED)
+ok('4in stock picks the site module width', derived.includes('^BY3,3,'))
+// It does give the line more room than the site format does - the site's own
+// 84x98 fills about two thirds of the label and leaves the rest empty.
+ok('the line is grown to fill the stock', derived.includes('^A0N,112,'))
+ok('a 3in roll drops the module rather than overflowing', zplLabel('A2707G05', { ...SCALED, widthIn: 3 }).includes('^BY2,'))
+
+/* ---------- barcode sizing ---------- */
+ok('code 39 is 9 elements plus a gap per character', code39Modules('AB', 2) === (2 + 2) * 13 - 1)
+ok('a wider ratio makes a wider symbol', code39Modules('AB', 3) > code39Modules('AB', 2))
+ok('code 39 is wider than code 128 for the same data', code39Modules('L0312K01', 2) > code128Modules('L0312K01'))
+ok('a plain letter run is 11 modules each', code128Modules('ABC') === (2 + 3) * 11 + 13)
+ok('four digits collapse into subset C', code128Modules('A0102') < code128Modules('ABCDE'))
+ok('a real code is 123 modules', code128Modules('A0102C01') === 123)
+ok('barcodeModules follows the chosen symbology', barcodeModules('L0312K01', { ...SCALED, symbology: 'code128' }) === code128Modules('L0312K01'))
+
+/* ---------- display vs barcode ---------- */
+ok('dash goes after the third character', displayCode('A0000A01') === 'A00-00A01')
+ok('display uppercases', displayCode('a0102c01') === 'A01-02C01')
+ok('short strings are left alone', displayCode('AB') === 'AB')
+ok('the separator is configurable', displayCode('A0000A01', ' - ') === 'A00 - 00A01')
 
 /* ---------- xlsx ---------- */
 const rows: Array<Array<string | number | null>> = [['OLD BIN', 'NEW BIN', 'QTY', 'NOTE']]

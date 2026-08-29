@@ -12,9 +12,10 @@ import {
   parseZones,
   newCode,
   displayCode,
+  normalizeScan,
 } from '@/lib/bins'
 import { readTable, parseDelimited } from '@/lib/sheet'
-import { zplBatch } from '@/lib/zpl'
+import { zplBatch, type LabelSpec, type Symbology } from '@/lib/zpl'
 
 type User = { name: string; role: string }
 type Site = { id: number; name: string; status: string; labels: number; pairs: number }
@@ -276,8 +277,8 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
   }
 
   const commit = async () => {
-    const o = oldBin.trim().toUpperCase()
-    const n = newBin.trim().toUpperCase()
+    const o = normalizeScan(oldBin)
+    const n = normalizeScan(newBin)
     if (!o || !n) return
     // Check locally first so an obvious mistake never costs a round trip.
     // The format gate is not optional - the server enforces it either way.
@@ -717,15 +718,38 @@ function Print({ siteId }: { siteId: number }) {
   const [relay, setRelay] = useState('http://localhost:9110')
   const [status, setStatus] = useState<{ ok: boolean; target?: string; mode?: string } | null>(null)
   const [dpi, setDpi] = useState<203 | 300>(203)
+  const [symbology, setSymbology] = useState<Symbology>('code39')
+  // 3in emits the site's own format untouched, which is drawn for 3in stock
+  // and inherits the printer's settings. 4in measures the same design out
+  // against the wider label, or a third of it prints empty.
+  const [stock, setStock] = useState<'3' | '4'>('4')
+  const [prefix, setPrefix] = useState('A     ')
   const [copies, setCopies] = useState('1')
-  const [darkness, setDarkness] = useState('10')
+  const [darkness, setDarkness] = useState('0')
   const [speed, setSpeed] = useState('4')
   const [filter, setFilter] = useState('')
   const [codes, setCodes] = useState<string[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
 
-  const spec = { dpi, widthIn: 4, heightIn: 1, darkness: Number(darkness) || 10, speed: Number(speed) || 4, copies: Math.max(1, Number(copies) || 1) }
+  const spec: LabelSpec = {
+    dpi,
+    widthIn: stock === '3' ? 3 : 4,
+    heightIn: 220 / 203,
+    darkness: Number(darkness) || 0,
+    speed: Number(speed) || 4,
+    copies: Math.max(1, Number(copies) || 1),
+    separator: '-',
+    symbology,
+    ratio: 3,
+    textWidthRatio: 98 / 84,
+    gapRatio: 0.01,
+    marginRatio: 0.047,
+    template: stock === '3' ? ('sample' as const) : ('scaled' as const),
+    // Matches what the racks already carry. normalizeScan strips it back off
+    // whatever a scanner returns, so old and new labels behave the same.
+    barcodePrefix: prefix,
+  }
 
   const load = useCallback(async () => {
     try {
@@ -752,6 +776,7 @@ function Print({ siteId }: { siteId: number }) {
 
   const zones = parseZones(filter)
   const selected = (codes ?? []).filter(c => !zones.length || zones.includes(c[0]))
+  const exampleCode = selected[0] ?? codes?.[0] ?? 'A0000A01'
 
   const download = () => {
     const zpl = zplBatch(selected, spec)
@@ -805,12 +830,27 @@ function Print({ siteId }: { siteId: number }) {
       <h2>Print to the Zebra</h2>
       <p className="hint">
         Prints the labels stored for this site, so what comes off the printer is exactly what the database
-        will accept. The barcode carries the code undashed — <code>A0000A01</code> — and the line underneath
-        shows it as <code>A00-00A01</code> for a human to read. Scanning the dashed form would match nothing.
+        will accept. The code reads <code>{displayCode(exampleCode, ' - ')}</code> across the top and the
+        barcode underneath carries it undashed, as <code>{exampleCode}</code> — scanning the dashed form
+        would match nothing.
       </p>
       {msg && <div className={`msg show ${msg.kind}`}>{msg.text}</div>}
 
       <div className="row">
+        <div>
+          <label>Label stock</label>
+          <select value={stock} onChange={e => setStock(e.target.value as '3' | '4')}>
+            <option value="4">4 x 1 in — scaled to fill</option>
+            <option value="3">3 x 1 in — the site format, verbatim</option>
+          </select>
+        </div>
+        <div>
+          <label>Barcode</label>
+          <select value={symbology} onChange={e => setSymbology(e.target.value as Symbology)}>
+            <option value="code39">Code 39 — what the racks already carry</option>
+            <option value="code128">Code 128 — narrower, for longer codes</option>
+          </select>
+        </div>
         <div>
           <label>Printer resolution</label>
           <select value={dpi} onChange={e => setDpi(Number(e.target.value) as 203 | 300)}>
@@ -829,6 +869,15 @@ function Print({ siteId }: { siteId: number }) {
         <div>
           <label>Speed (in/sec)</label>
           <input type="number" min={1} max={14} value={speed} onChange={e => setSpeed(e.target.value)} />
+        </div>
+        <div>
+          <label>Barcode prefix</label>
+          <input
+            value={prefix}
+            onChange={e => setPrefix(e.target.value)}
+            placeholder="none"
+            style={{ fontFamily: 'ui-monospace, monospace' }}
+          />
         </div>
         <div>
           <label>Only these zones</label>
@@ -1154,8 +1203,8 @@ function Validate({ siteId, siteName, user }: { siteId: number; siteName: string
   /* ---------- scanning ---------- */
 
   const commit = async () => {
-    const o = oldBin.trim().toUpperCase()
-    const n = newBin.trim().toUpperCase()
+    const o = normalizeScan(oldBin)
+    const n = normalizeScan(newBin)
     if (!o || !n) return
     if (o === n) {
       flash('bad', 'Old and new are identical — same label scanned twice?')
