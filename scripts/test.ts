@@ -18,7 +18,15 @@ import {
 import { makeXlsx } from '../src/lib/xlsx.ts'
 import { parseDelimited, readXlsxRows } from '../src/lib/sheet.ts'
 import { pickDatabaseUrl } from '../src/lib/dburl.mjs'
-import { zplLabel, zplBatch, DEFAULT_LABEL, code128Modules, code39Modules, barcodeModules } from '../src/lib/zpl.ts'
+import {
+  zplLabel,
+  zplBatch,
+  DEFAULT_LABEL,
+  RESTORE,
+  code128Modules,
+  code39Modules,
+  barcodeModules,
+} from '../src/lib/zpl.ts'
 import { writeFileSync, unlinkSync } from 'node:fs'
 
 let pass = 0
@@ -211,6 +219,7 @@ ok('short strings are left alone', displayCode('AB') === 'AB')
 // than a calculation - if it drifts, new labels stop matching the racks.
 const SAMPLE = [
   '~CC^',
+  '^XA^JUR^XZ',
   '^XA^JMA^FS^XZ',
   '^XA^MNY^FS^XZ',
   '^XA^MMT^FS^XZ',
@@ -229,6 +238,11 @@ const SAMPLE = [
 ].join('\n')
 
 ok('reproduces the site format exactly', zplLabel('A2707G05') === SAMPLE)
+// The one addition to their file. ^PW and ^LL persist on the printer and this
+// format sends neither, so without recalling the saved configuration a single
+// 3x1 run leaves every later label clipped to 609 dots - and switching the
+// setting back does nothing, because there is nothing in the format to undo it.
+ok('recalls the saved configuration first', zplLabel('A2707G05').split('\n')[1] === '^XA^JUR^XZ')
 ok('no ^PW or ^LL - the printer stock decides', !zplLabel('A2707G05').includes('^PW'))
 // Their file opens with ~CC¬, which switches the format prefix and leaves it
 // switched. Without resetting it, a plain ^XA after their program has run is
@@ -280,7 +294,11 @@ ok(
 const SCALED = { ...DEFAULT_LABEL, template: 'scaled' as const }
 const z = zplLabel('A0102C01', SCALED)
 ok('scaled is one label', (z.match(/\^XA/g) ?? []).length === 1 && z.trim().endsWith('^XZ'))
-ok('scaled states the stock', z.includes('^PW812') && z.includes('^LL220'))
+// ^PW but no ^LL. Length is 1in on every stock, only the width changes, and
+// the printer's gap sensor measures length better than we can declare it -
+// asserting 220 against its calibrated 218 is how registration drifts.
+ok('scaled states the width', z.includes('^PW812'))
+ok('scaled leaves length to the calibration', !z.includes('^LL'))
 const barcodeData = /\^B[3C]N[^^]*\^FD([^^]*)\^FS/.exec(z)?.[1]
 ok('barcode field is the padding then the code', barcodeData === 'A     A0102C01')
 ok('the dash is never inside the barcode field', !barcodeData?.includes('-'))
@@ -289,9 +307,15 @@ ok('code 39 by default', z.includes('^B3N,'))
 ok('code 128 on request', zplLabel('A0102C01', { ...SCALED, symbology: 'code128' }).includes('^BCN,'))
 const zi = zplLabel('L0312K01', SCALED)
 const barX = Number(/\^FO(\d+),\d+\^B[3C]/.exec(zi)![1])
-const textX = Number(/\^FO(\d+),\d+\^A0N/.exec(zi)![1])
+// ^FB now sits between ^FO and the font, bounding the line.
+const textX = Number(/\^FO(\d+),\d+\^FB/.exec(zi)![1])
 ok('bars and line start at the same x', barX === textX)
 ok('text is printed before the barcode', zi.indexOf('^A0N') < zi.indexOf('^B3N'))
+ok('the line is bounded so it cannot overrun', /\^FB(\d+),1,0,L,0/.test(zi))
+ok('that bound is the usable width', Number(/\^FB(\d+),/.exec(zi)![1]) === 812 - 38 * 2)
+ok('a label home offset can be set', zplLabel('L0312K01', { ...SCALED, offsetX: 25 }).includes('^LH25,0'))
+ok('and defaults to none', zi.includes('^LH0,0'))
+
 // The site format is a 4in format after all: its 14-character symbol at
 // ^BY03,3 is 765 dots, which needs the 812-dot head. Sized against the same
 // stock the scaled path picks the same module width.
@@ -299,8 +323,22 @@ const derived = zplLabel('A2707G05', SCALED)
 ok('4in stock picks the site module width', derived.includes('^BY3,3,'))
 // It does give the line more room than the site format does - the site's own
 // 84x98 fills about two thirds of the label and leaves the rest empty.
-ok('the line is grown to fill the stock', derived.includes('^A0N,112,'))
+// Bigger than the site format's own 84x98, but sized with headroom now: the
+// proportional advance was estimated at one size and applying it at another
+// put the line off the right edge.
+ok('the line is grown, but within the stock', derived.includes('^A0N,86,100'))
 ok('a 3in roll drops the module rather than overflowing', zplLabel('A2707G05', { ...SCALED, widthIn: 3 }).includes('^BY2,'))
+
+/* ---------- the printer is handed back as it was found ---------- */
+// A scaled run sets ^PW/^LL for its own stock and those outlive the job. Left
+// set, they would narrow the next print from any other program on the printer,
+// including the site's own label software.
+const narrow = zplBatch(['L0312K01'], { ...SCALED, widthIn: 3 })
+ok('a scaled run states its stock', narrow.includes('^PW609'))
+ok('and restores the printer afterwards', narrow.trim().endsWith('^XA^JUR^XZ'))
+ok('the site format restores it up front too', zplBatch(['L0312K01']).includes('^XA^JUR^XZ'))
+ok('restore is exported for reuse', RESTORE === '^XA^JUR^XZ')
+
 
 /* ---------- barcode sizing ---------- */
 ok('code 39 is 9 elements plus a gap per character', code39Modules('AB', 2) === (2 + 2) * 13 - 1)

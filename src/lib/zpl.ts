@@ -71,6 +71,13 @@ export type LabelSpec = {
   /** Edge margin as a fraction of label height. The stock has little to spare. */
   marginRatio: number
   /**
+   * Shifts everything left or right, in dots. For stock that sits proud of
+   * where the head expects it - if the whole label prints offset by the same
+   * amount, that is mechanical, not a layout fault, and this nudges it back
+   * without touching the design. 203 dots to the inch.
+   */
+  offsetX?: number
+  /**
    * 'sample' emits the site's existing format verbatim, inheriting the
    * printer's stock. 'scaled' lays the same design out against ^PW/^LL, for
    * stock the existing format was not drawn for.
@@ -132,6 +139,13 @@ const SAMPLE_PREAMBLE = [
   // label program has run, a plain ^XA from here is ignored outright. ~ is the
   // control prefix and is unaffected either way, so this always lands.
   '~CC^',
+  // ^JUR recalls the printer's saved configuration, which is what puts PRINT
+  // WIDTH back. ^PW and ^LL persist on the printer, and this format sends
+  // neither - it inherits the stock. So one 3x1 run leaves the width at 609
+  // and every site-format label after it prints clipped, with nothing on
+  // screen to say why. The site's own file has no ^JUR because their program
+  // never changes the width; ours does.
+  '^XA^JUR^XZ',
   '^XA^JMA^FS^XZ',
   '^XA^MNY^FS^XZ',
   '^XA^MMT^FS^XZ',
@@ -257,10 +271,17 @@ export function zplLabel(code: string, spec: LabelSpec = DEFAULT_LABEL): string 
   // width the printer is set to - its 84x98 fills a 3in label, and the same
   // numbers on 4in stock leave a third of the label empty. Fed 3in stock this
   // arrives back at 84x98 on its own.
-  const PROPORTIONAL = 0.62 // font 0 is proportional; advance is well under the width parameter
+  // Font 0 is proportional: the width parameter caps a glyph, it is not the
+  // advance. 0.62 was measured off the site's own 84x98 line, but a measurement
+  // taken at one size is a thin thing to size a whole label on - at width 131
+  // it predicted the line ending at 769 of 812, and being wrong by a tenth put
+  // it off the edge. 0.75 with a margin of safety costs a few dots of height
+  // and cannot overrun.
+  const PROPORTIONAL = 0.75
+  const SAFETY = 0.92
   let textW = spec.textShare
     ? Math.round(h * spec.textShare * widthRatio)
-    : Math.floor(usable / (Math.max(1, shown.length) * PROPORTIONAL))
+    : Math.floor((usable * SAFETY) / (Math.max(1, shown.length) * PROPORTIONAL))
   let textH = Math.round(textW / widthRatio)
 
   // The glyphs have to stop before the bars start. Only the cap matters, and
@@ -285,14 +306,19 @@ export function zplLabel(code: string, spec: LabelSpec = DEFAULT_LABEL): string 
 
   return [
     '^XA',
-    `^PW${w}`, // print width
-    `^LL${h}`, // label length
-    '^LH0,0',
+    `^PW${w}`, // print width - the one thing that differs between 3in and 4in
+    // No ^LL. Length is 1in on every stock here, only the width changes, and
+    // the printer's own gap sensor measures it better than we can declare it -
+    // it calibrated to 218 where this was asserting 220. Declaring a length
+    // that disagrees with the calibration is how registration drifts.
+    `^LH${Math.round(spec.offsetX ?? 0)},0`,
     '^PON', // normal orientation, as the sample sets
     `^MD${clamp(spec.darkness, 0, 30)}`,
     `^PR${clamp(spec.speed, 1, 14)}`,
     '^CI28', // UTF-8, so a stray character cannot corrupt the stream
-    `^FO${margin},${textY}^A0N,${textH},${textW}^FD${esc(shown)}^FS`,
+    // ^FB bounds the field: whatever the estimate does, the printer will not
+    // draw past `usable`. Left-justified, one line, no wrap.
+    `^FO${margin},${textY}^FB${usable},1,0,L,0^A0N,${textH},${textW}^FD${esc(shown)}^FS`,
     `^BY${moduleW},${clamp(spec.ratio ?? 3, 2, 3)},${barH}`,
     `^FO${barX},${barY}${barcode}`,
     `^PQ${Math.max(1, Math.floor(spec.copies))}`,
@@ -316,8 +342,15 @@ export function zplBatch(codes: string[], spec: LabelSpec = DEFAULT_LABEL): stri
     })
     return [SAMPLE_PREAMBLE, ...bodies].join('\n') + '\n'
   }
-  return codes.map(c => zplLabel(c, spec)).join('\n') + '\n'
+  // A scaled run sets ^PW/^LL for its own stock, and those persist after it.
+  // Leaving them set would narrow the next job from any other program on this
+  // printer - including the site's own label software, which assumes the
+  // saved configuration. Hand the printer back as we found it.
+  return codes.map(c => zplLabel(c, spec)).join('\n') + '\n' + RESTORE + '\n'
 }
+
+/** Puts the printer back to its saved configuration. */
+export const RESTORE = '^XA^JUR^XZ'
 
 /**
  * ^FD ends at the next ^ or ~, so those two characters cannot appear raw in
