@@ -313,8 +313,14 @@ ok('bars and line start at the same x', barX === textX)
 ok('text is printed before the barcode', zi.indexOf('^A0N') < zi.indexOf('^B3N'))
 ok('the line is bounded so it cannot overrun', /\^FB(\d+),1,0,L,0/.test(zi))
 ok('that bound is the usable width', Number(/\^FB(\d+),/.exec(zi)![1]) === 812 - 38 * 2)
-ok('a label home offset can be set', zplLabel('L0312K01', { ...SCALED, offsetX: 25 }).includes('^LH25,0'))
-ok('and defaults to none', zi.includes('^LH0,0'))
+// ^LH will not take a negative and the correction is usually leftward, so the
+// nudge moves the field origins instead - and comes out of the width allowed,
+// or correcting an offset would just move the overrun to the other edge.
+ok('a nudge moves the fields', /\^FO25,\d+\^FB/.test(zplLabel('L0312K01', { ...SCALED, offsetX: -13 })))
+ok('a nudge moves the bars with them', /\^FO25,\d+\^B3/.test(zplLabel('L0312K01', { ...SCALED, offsetX: -13 })))
+ok('the site format nudges too', zplLabel('L0312K01', { ...DEFAULT_LABEL, offsetX: -13 }).includes('^FO0025,0084'))
+ok('and is left alone at zero', zplLabel('L0312K01').includes('^FO0038,0084'))
+ok('label home stays at the origin', zi.includes('^LH0,0'))
 
 // The site format is a 4in format after all: its 14-character symbol at
 // ^BY03,3 is 765 dots, which needs the 812-dot head. Sized against the same

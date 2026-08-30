@@ -741,6 +741,9 @@ function Print({ siteId }: { siteId: number }) {
   // same design out against the label they are given.
   const [stock, setStock] = useState<'site' | '4' | '3'>('site')
   const [prefix, setPrefix] = useState('A     ')
+  // Media that does not sit where the head expects it. 203 dots to the inch,
+  // so 1/16in is 13 and 1/8in is 25; negative moves the printing left.
+  const [nudge, setNudge] = useState('0')
   const [copies, setCopies] = useState('1')
   const [darkness, setDarkness] = useState('0')
   const [speed, setSpeed] = useState('4')
@@ -766,6 +769,7 @@ function Print({ siteId }: { siteId: number }) {
     // Matches what the racks already carry. normalizeScan strips it back off
     // whatever a scanner returns, so old and new labels behave the same.
     barcodePrefix: prefix,
+    offsetX: Number(nudge) || 0,
   }
 
   const load = useCallback(async () => {
@@ -887,6 +891,10 @@ function Print({ siteId }: { siteId: number }) {
         <div>
           <label>Speed (in/sec)</label>
           <input type="number" min={1} max={14} value={speed} onChange={e => setSpeed(e.target.value)} />
+        </div>
+        <div>
+          <label>Nudge left/right (dots)</label>
+          <input type="number" value={nudge} onChange={e => setNudge(e.target.value)} placeholder="0" />
         </div>
         <div>
           <label>Barcode prefix</label>

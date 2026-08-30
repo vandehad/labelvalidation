@@ -71,10 +71,12 @@ export type LabelSpec = {
   /** Edge margin as a fraction of label height. The stock has little to spare. */
   marginRatio: number
   /**
-   * Shifts everything left or right, in dots. For stock that sits proud of
-   * where the head expects it - if the whole label prints offset by the same
-   * amount, that is mechanical, not a layout fault, and this nudges it back
-   * without touching the design. 203 dots to the inch.
+   * Shifts every field left or right, in dots, for media that does not sit
+   * where the head expects it. Applied to the field origins rather than ^LH,
+   * which will not take a negative - and the correction is usually leftward,
+   * because the overrun shows up on the right.
+   *
+   * 203 dots to the inch: 1/16in is 13, 1/8in is 25.
    */
   offsetX?: number
   /**
@@ -160,12 +162,15 @@ const SAMPLE_PREAMBLE = [
 
 const pad4 = (n: number) => String(Math.max(1, Math.floor(n))).padStart(4, '0')
 
-function sampleBody(code: string, shown: string, copies: number, prefix: string): string {
+function sampleBody(code: string, shown: string, copies: number, prefix: string, offsetX = 0): string {
+  // The site's own origin is x=38. A media correction moves both fields
+  // together, so the design is untouched and only where it lands changes.
+  const x = String(Math.max(0, 38 + Math.round(offsetX))).padStart(4, '0')
   return [
     '^XA^MCY^XZ^XA^ILLB^FS',
     '^FO0000,0000^AAN,0000,0000^FD ^FS',
-    `^FO0038,0084^BY03,3,100^B3N,N,0100,N,N^FD${prefix}${code}^FS`,
-    `^FO0038,0012^A0N,0084,0098^FD${shown}^FS`,
+    `^FO${x},0084^BY03,3,100^B3N,N,0100,N,N^FD${prefix}${code}^FS`,
+    `^FO${x},0012^A0N,0084,0098^FD${shown}^FS`,
     `^PQ${pad4(copies)},0000,0000,N^FS^MCY^XZ`,
   ].join('\n')
 }
@@ -228,7 +233,7 @@ export function zplLabel(code: string, spec: LabelSpec = DEFAULT_LABEL): string 
   const shown = displayCode(c, spec.separator ?? '-')
 
   if ((spec.template ?? 'sample') === 'sample') {
-    return `${SAMPLE_PREAMBLE}\n${sampleBody(esc(c), esc(shown), spec.copies, spec.barcodePrefix ?? '')}`
+    return `${SAMPLE_PREAMBLE}\n${sampleBody(esc(c), esc(shown), spec.copies, spec.barcodePrefix ?? '', spec.offsetX ?? 0)}`
   }
 
   const w = Math.round(spec.widthIn * spec.dpi)
@@ -243,8 +248,11 @@ export function zplLabel(code: string, spec: LabelSpec = DEFAULT_LABEL): string 
   // 84, and the bars start at y=84 - overlapping the line's cell, because a
   // font cell is taller than the glyphs inside it. Held as fractions so the
   // same layout survives a different stock size or a 300dpi head.
-  const margin = Math.round(w * (spec.marginRatio ?? 0.047))
-  const usable = w - margin * 2
+  const nudge = Math.round(spec.offsetX ?? 0)
+  const margin = Math.max(0, Math.round(w * (spec.marginRatio ?? 0.047)) + nudge)
+  // A rightward nudge has to come out of the width available, or correcting
+  // an offset just moves the overrun rather than curing it.
+  const usable = w - margin - Math.round(w * (spec.marginRatio ?? 0.047))
 
   // Fill the width unless told otherwise. Floor of 2 dots keeps the narrow bar
   // above 0.0098in at 203dpi, comfortably clear of the 0.0075in where cheap
@@ -311,7 +319,7 @@ export function zplLabel(code: string, spec: LabelSpec = DEFAULT_LABEL): string 
     // the printer's own gap sensor measures it better than we can declare it -
     // it calibrated to 218 where this was asserting 220. Declaring a length
     // that disagrees with the calibration is how registration drifts.
-    `^LH${Math.round(spec.offsetX ?? 0)},0`,
+    '^LH0,0',
     '^PON', // normal orientation, as the sample sets
     `^MD${clamp(spec.darkness, 0, 30)}`,
     `^PR${clamp(spec.speed, 1, 14)}`,
@@ -338,7 +346,7 @@ export function zplBatch(codes: string[], spec: LabelSpec = DEFAULT_LABEL): stri
   if ((spec.template ?? 'sample') === 'sample') {
     const bodies = codes.map(c => {
       const u = String(c ?? '').trim().toUpperCase()
-      return sampleBody(esc(u), esc(displayCode(u, spec.separator ?? '-')), spec.copies, spec.barcodePrefix ?? '')
+      return sampleBody(esc(u), esc(displayCode(u, spec.separator ?? '-')), spec.copies, spec.barcodePrefix ?? '', spec.offsetX ?? 0)
     })
     return [SAMPLE_PREAMBLE, ...bodies].join('\n') + '\n'
   }
