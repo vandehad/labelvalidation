@@ -218,6 +218,20 @@ than going to the printer; a rack with a bin the database cannot find is the
 failure this app exists to prevent. List entries go through `normalizeScan`, so
 a damaged label can be scanned straight into the box.
 
+**The handheld is its own route, not a breakpoint.** `/scan` and the desktop
+Validate tab do the same job for different hands. The desktop one shows tables
+and history; the handheld one shows a verdict the size of the screen and
+nothing else. Trying to serve both from one component would have meant a
+compromise that suited neither.
+
+Three things there are load-bearing rather than decorative. `inputMode="none"`
+on the scan fields: DataWedge types a scan in as keystrokes, so the field must
+accept them, but without this Android raises the on-screen keyboard over half a
+five-inch screen on every single scan. `navigator.vibrate` on a mismatch: an
+aisle is loud, a beep alone gets missed, and a missed mismatch is a wrong label
+left hanging. And focus returning to the old-bin field after every scan, so
+nobody has to tap a screen wearing gloves.
+
 **Superset then reconcile.** Print more labels than needed, scan what is real,
 then delete the leftovers. The alternative — print exactly what the old data
 implies — is what failed at site 18.

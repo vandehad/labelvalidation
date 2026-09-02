@@ -203,6 +203,14 @@ function Main({ user, onOut }: { user: User; onOut: () => void }) {
           )}
         </div>
         <div className="who">
+          <a
+            className="act ghost"
+            href="/scan"
+            style={{ padding: '4px 10px', color: '#fff', borderColor: '#fff', textDecoration: 'none' }}
+            title="Validation sized for a handheld"
+          >
+            Handheld
+          </a>
           <b>{user.name}</b>
           <span style={{ opacity: 0.7 }}>{user.role}</span>
           <button className="act ghost" style={{ padding: '4px 10px', color: '#fff', borderColor: '#fff' }} onClick={logout}>

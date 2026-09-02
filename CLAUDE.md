@@ -58,6 +58,10 @@ npm run user -- <name> <password> [scanner|admin]
 - **`generateLabels` reports what it could not honour.** Overlapping zone
   blocks would otherwise be swallowed by `UNIQUE (site_id, code)` without a
   word. `problems` carries them out to the caller; do not drop it.
+- **`/scan` is the handheld page and is a separate route on purpose.** Not a
+  breakpoint on the desktop tab - the two are different tools. Its fields carry
+  `inputMode="none"`: DataWedge types a scan in as keystrokes, and Android must
+  not raise the on-screen keyboard over a five-inch screen on every scan.
 - Scanner input must never be cached. Routes are `force-dynamic`.
 - Refusals happen client-side for speed **and** server-side for truth. Keep
   both in step; `validatePair` in `src/lib/bins.ts` is shared by each.

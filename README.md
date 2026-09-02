@@ -15,6 +15,7 @@ Two modes:
 - **Batch + print** — say the shape of the warehouse (zones, aisles, columns,
   shelves, positions) and get the label set, printed to a Zebra as Code 128.
 - **Admin** — accounts, roles, password resets. Nothing is ever deleted.
+- **Handheld** — the same validation at `/scan`, sized for a Zebra TC52.
 - **Validate** — audit a mapping that already exists. Upload the old→new
   worksheet (or point at the pairs already scanned in), then scan each shelf and
   get **match**, **mismatch** or **not in the reference**. Nothing is refused
@@ -186,6 +187,30 @@ a hang.
 **Or no local software at all:** *Download .zpl* in the Print card, then
 `copy /b labels.zpl \\localhost\ZebraECOM2`.
 
+## On a handheld
+
+`/scan` is validation for a Zebra TC52 or any Android scanner. Sign in on the
+device and it stays signed in for the shift; the site and reference are
+remembered between wakes.
+
+It is a separate page rather than a narrow version of the desktop tab, because
+the constraints are different:
+
+- **The keyboard stays down.** DataWedge delivers a scan as keystrokes with an
+  Enter suffix, so the fields accept it while `inputMode="none"` stops Android
+  raising the on-screen keyboard over half the screen on every scan.
+- **The verdict is the page** — full-width, colour first, readable at arm's
+  length with the device in one hand.
+- **A mismatch vibrates.** An aisle is loud enough that a beep alone gets
+  missed, and a missed mismatch is a wrong label left on the rack.
+- **Focus returns to the old-bin field after every scan**, so the gun always
+  lands somewhere useful without tapping the screen with gloves on.
+- Buttons are 52px, and the tally sits along the bottom: checked, mismatch,
+  not-in-reference, to go.
+
+Scanning a printed label works as it does anywhere else — the gun returns the
+six-character zone field and `normalizeScan` strips it.
+
 ## Auditing labels that are already hung
 
 Use the **Validate** tab when the labels exist and the question is whether they
@@ -266,7 +291,8 @@ field: the code should land and the cursor jump to New bin.
 ```
 src/
   app/
-    page.tsx              session check, renders the client app
+    page.tsx              session check, renders the desktop app
+    scan/page.tsx         the same for the handheld page
     api/
       auth/{login,logout,me}
       sites                 list / create
@@ -280,7 +306,8 @@ src/
       checks/[id]           undo
       reconcile             unused / unexpected / one-for-one
       export                .xlsx workbook
-  components/Station.tsx    the whole UI
+  components/Station.tsx    the desktop UI
+  components/MobileScan.tsx the handheld validation page
   lib/
     bins.ts                 parsing, label generation, pair validation
     auth.ts                 PBKDF2 hashing + HMAC-signed cookie
