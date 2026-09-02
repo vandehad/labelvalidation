@@ -1,11 +1,18 @@
 /**
  * ZPL II for Zebra bin labels.
  *
- * One label carries the bin code twice: as a Code 128 barcode holding the code
- * exactly as it is stored, and as a human-readable line with a dash inserted
- * after the third character. The dash is display only. A scanner reading
- * `A00-00A01` would match nothing in `pairs`, `labels` or `bin_map`, because
- * every bin code in this app is undashed.
+ * One label carries the bin code twice, and neither copy is what you would
+ * guess from looking at it:
+ *
+ *   barcode  `M     M0501B01`  a six-character zone field, then the code
+ *   line     `M05-01B01`       a dash after the third character, display only
+ *
+ * Both shapes come off the labels the site already hangs. A scanner returns
+ * the whole barcode field, so `normalizeScan` in bins.ts takes what follows
+ * the last space; and the dashed form is never encoded, because a scan of
+ * `M05-01B01` matches nothing in `pairs`, `labels` or `bin_map`.
+ *
+ * Code 39, not Code 128 - see `Symbology`.
  *
  * No dependency, no vendor SDK - ZPL is a text protocol, and a Zebra printer
  * takes it raw over port 9100 or through a Windows print queue.
@@ -85,16 +92,6 @@ export type LabelSpec = {
    * stock the existing format was not drawn for.
    */
   template: 'sample' | 'scaled'
-  /**
-   * Put in front of the code inside the barcode, and nowhere else.
-   *
-   * The site's labels encode `A     A2707G05` - a six-character left-justified
-   * field, then the bin code. The human-readable line carries no such thing.
-   * Match it and new labels scan the same as the ones already hung; a scanner
-   * returns the whole string either way, which is why `normalizeScan` in
-   * bins.ts takes what follows the last space.
-   */
-  barcodePrefix: string
 }
 
 export const DEFAULT_LABEL: LabelSpec = {
@@ -114,7 +111,6 @@ export const DEFAULT_LABEL: LabelSpec = {
   gapRatio: 0.01,
   marginRatio: 0.047,
   template: 'sample',
-  barcodePrefix: 'A     ',
 }
 
 /**
@@ -130,10 +126,8 @@ export const DEFAULT_LABEL: LabelSpec = {
  * printer is configured for, which is how the existing labels are produced and
  * why copying its dot values onto different stock came out wrong.
  *
- * One departure. The sample's barcode field reads `^FDA    A2707G05` - the
- * code with a letter and four spaces in front of it. Code 39 encodes spaces,
- * so a scan of that returns `A    A2707G05`, which matches nothing in `pairs`,
- * `labels` or `bin_map`. Only the bin code goes in here.
+ * The barcode field carries a six-character zone field before the code, as the
+ * site's own labels do - see `barcodeData`.
  */
 const SAMPLE_PREAMBLE = [
   // ~CC resets the format prefix to ^. The site's own file opens with `~CC¬`,
@@ -160,16 +154,34 @@ const SAMPLE_PREAMBLE = [
   '^ISLB,N^FS^XZ',
 ].join('\n')
 
+/**
+ * What actually goes in the barcode: a six-character left-justified zone
+ * field, then the bin code. `M0501B01` is encoded as `M     M0501B01`.
+ *
+ * It is derived, never configured. The zone is already the first character of
+ * every code, so asking for it is asking someone to retype something the code
+ * has told us - and getting it wrong puts the wrong first character in every
+ * barcode of a zone, which nothing on screen would show.
+ *
+ * The printed line carries no such field; it is the dashed code and nothing
+ * else. A scanner returns all fourteen characters, which is why `normalizeScan`
+ * in bins.ts takes what follows the last space.
+ */
+export function barcodeData(code: string): string {
+  const c = String(code ?? '').trim().toUpperCase()
+  return c ? c[0].padEnd(6, ' ') + c : ''
+}
+
 const pad4 = (n: number) => String(Math.max(1, Math.floor(n))).padStart(4, '0')
 
-function sampleBody(code: string, shown: string, copies: number, prefix: string, offsetX = 0): string {
+function sampleBody(code: string, shown: string, copies: number, offsetX = 0): string {
   // The site's own origin is x=38. A media correction moves both fields
   // together, so the design is untouched and only where it lands changes.
   const x = String(Math.max(0, 38 + Math.round(offsetX))).padStart(4, '0')
   return [
     '^XA^MCY^XZ^XA^ILLB^FS',
     '^FO0000,0000^AAN,0000,0000^FD ^FS',
-    `^FO${x},0084^BY03,3,100^B3N,N,0100,N,N^FD${prefix}${code}^FS`,
+    `^FO${x},0084^BY03,3,100^B3N,N,0100,N,N^FD${barcodeData(code)}^FS`,
     `^FO${x},0012^A0N,0084,0098^FD${shown}^FS`,
     `^PQ${pad4(copies)},0000,0000,N^FS^MCY^XZ`,
   ].join('\n')
@@ -233,7 +245,7 @@ export function zplLabel(code: string, spec: LabelSpec = DEFAULT_LABEL): string 
   const shown = displayCode(c, spec.separator ?? '-')
 
   if ((spec.template ?? 'sample') === 'sample') {
-    return `${SAMPLE_PREAMBLE}\n${sampleBody(esc(c), esc(shown), spec.copies, spec.barcodePrefix ?? '', spec.offsetX ?? 0)}`
+    return `${SAMPLE_PREAMBLE}\n${sampleBody(esc(c), esc(shown), spec.copies, spec.offsetX ?? 0)}`
   }
 
   const w = Math.round(spec.widthIn * spec.dpi)
@@ -262,7 +274,7 @@ export function zplLabel(code: string, spec: LabelSpec = DEFAULT_LABEL): string 
   // matching 38 - and a symbol sized against the narrower figure drops a whole
   // module width.
   const barUsable = w - margin - Math.round(w * 0.011)
-  const modules = barcodeModules(esc(spec.barcodePrefix ?? '') + esc(c), spec)
+  const modules = barcodeModules(barcodeData(esc(c)), spec)
   const moduleW = clamp(spec.moduleW ?? Math.floor(barUsable / modules), 2, 8)
 
   // Font 0 is proportional: the width parameter is the widest a glyph may be,
@@ -309,8 +321,8 @@ export function zplLabel(code: string, spec: LabelSpec = DEFAULT_LABEL): string 
   // orientation, height, no interpretation line (there is one already).
   const barcode =
     spec.symbology === 'code39'
-      ? `^B3N,N,${barH},N,N^FD${esc(spec.barcodePrefix ?? '')}${esc(c)}^FS`
-      : `^BCN,${barH},N,N,N^FD${esc(spec.barcodePrefix ?? '')}${esc(c)}^FS`
+      ? `^B3N,N,${barH},N,N^FD${barcodeData(esc(c))}^FS`
+      : `^BCN,${barH},N,N,N^FD${barcodeData(esc(c))}^FS`
 
   return [
     '^XA',
@@ -346,7 +358,7 @@ export function zplBatch(codes: string[], spec: LabelSpec = DEFAULT_LABEL): stri
   if ((spec.template ?? 'sample') === 'sample') {
     const bodies = codes.map(c => {
       const u = String(c ?? '').trim().toUpperCase()
-      return sampleBody(esc(u), esc(displayCode(u, spec.separator ?? '-')), spec.copies, spec.barcodePrefix ?? '', spec.offsetX ?? 0)
+      return sampleBody(esc(u), esc(displayCode(u, spec.separator ?? '-')), spec.copies, spec.offsetX ?? 0)
     })
     return [SAMPLE_PREAMBLE, ...bodies].join('\n') + '\n'
   }
@@ -367,7 +379,7 @@ export const RESTORE = '^XA^JUR^XZ'
  * own - so it is checked rather than assumed.
  */
 function esc(s: string): string {
-  // Spaces are deliberately kept: the barcode prefix is made of them.
+  // Spaces are deliberately kept: the zone field is padded with them.
   return s.replace(/[\^~]/g, '')
 }
 

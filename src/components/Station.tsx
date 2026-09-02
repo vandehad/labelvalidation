@@ -15,7 +15,7 @@ import {
   normalizeScan,
 } from '@/lib/bins'
 import { readTable, parseDelimited } from '@/lib/sheet'
-import { zplBatch, type LabelSpec, type Symbology } from '@/lib/zpl'
+import { zplBatch, barcodeData, type LabelSpec, type Symbology } from '@/lib/zpl'
 
 type User = { name: string; role: string }
 type Site = { id: number; name: string; status: string; labels: number; pairs: number }
@@ -740,7 +740,6 @@ function Print({ siteId }: { siteId: number }) {
   // and lets the printer's own stock settings stand; the other two measure the
   // same design out against the label they are given.
   const [stock, setStock] = useState<'site' | '4' | '3'>('site')
-  const [prefix, setPrefix] = useState('A     ')
   // Media that does not sit where the head expects it. 203 dots to the inch,
   // so 1/16in is 13 and 1/8in is 25; negative moves the printing left.
   const [nudge, setNudge] = useState('0')
@@ -768,7 +767,6 @@ function Print({ siteId }: { siteId: number }) {
     template: stock === 'site' ? ('sample' as const) : ('scaled' as const),
     // Matches what the racks already carry. normalizeScan strips it back off
     // whatever a scanner returns, so old and new labels behave the same.
-    barcodePrefix: prefix,
     offsetX: Number(nudge) || 0,
   }
 
@@ -852,8 +850,9 @@ function Print({ siteId }: { siteId: number }) {
       <p className="hint">
         Prints the labels stored for this site, so what comes off the printer is exactly what the database
         will accept. The code reads <code>{displayCode(exampleCode, ' - ')}</code> across the top and the
-        barcode underneath carries it undashed, as <code>{exampleCode}</code> — scanning the dashed form
-        would match nothing.
+        barcode underneath carries <code>{barcodeData(exampleCode)}</code> — the zone, padded to six
+        characters, then the code. Both come off the labels already hung; scanning either form lands the
+        same bin.
       </p>
       {msg && <div className={`msg show ${msg.kind}`}>{msg.text}</div>}
 
@@ -895,15 +894,6 @@ function Print({ siteId }: { siteId: number }) {
         <div>
           <label>Nudge left/right (dots)</label>
           <input type="number" value={nudge} onChange={e => setNudge(e.target.value)} placeholder="0" />
-        </div>
-        <div>
-          <label>Barcode prefix</label>
-          <input
-            value={prefix}
-            onChange={e => setPrefix(e.target.value)}
-            placeholder="none"
-            style={{ fontFamily: 'ui-monospace, monospace' }}
-          />
         </div>
         <div>
           <label>Only these zones</label>

@@ -175,18 +175,20 @@ carries the undashed code, because that is what is in `pairs`, `labels` and
 asserting the barcode field specifically, not merely "some field", because the
 obvious regex for it matches the human-readable line by accident.
 
-**The barcode carries a padded field.** The site's own ZPL encodes
+**The barcode carries a zone field.** The site's own ZPL encodes
 `A     A2707G05` - `A`, five spaces, then the code - a six-character
 left-justified field. The printed line carries no such thing. New labels match
-that so a rack of old and new scans alike, and `normalizeScan` in `bins.ts`
-takes whatever follows the last space, applied on the client and again on the
-server. Skip it and every real scan fails the format gate and lands as
-`unmapped`, indistinguishable from a bin nobody mapped.
+it so a rack of old and new scans alike, and `normalizeScan` in `bins.ts` takes
+whatever follows the last space, applied on the client and again on the server.
+Skip it and every real scan fails the format gate and lands as `unmapped`,
+indistinguishable from a bin nobody mapped.
 
-Unresolved: in `A     A2707G05` the prefix `A` is also the zone letter, so a
-constant `A` and a repeated zone letter look identical. The ZPL for any label
-outside zone A settles it. Getting it wrong puts the wrong first character in
-every barcode outside zone A.
+That field held an ambiguity for a while: in `A     A2707G05` the leading `A`
+is also the zone letter, so a constant and a repeated zone look identical. It
+is the **zone** - `M0501B01` encodes as `M     M0501B01`. `barcodeData` in
+`zpl.ts` derives it, and it is deliberately not a setting: the zone is already
+the first character of the code, and a mistyped one would put the wrong
+character in every barcode of a zone with nothing on screen to show it.
 
 **Printing goes through a local relay, not the browser.** A page cannot open a
 raw socket and cannot see a USB printer. `scripts/print-server.mjs` runs on the
@@ -207,7 +209,7 @@ implies — is what failed at site 18.
 Verified in this repo:
 
 - `npm run build` — clean, all routes correctly dynamic
-- `npm test` — 148 logic tests pass
+- `npm test` — 170 logic tests pass
 - `npx tsc --noEmit` — clean
 - 37 further checks against the live Neon database, end to end through the
   HTTP routes — see the section below

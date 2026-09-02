@@ -26,6 +26,7 @@ import {
   code128Modules,
   code39Modules,
   barcodeModules,
+  barcodeData,
 } from '../src/lib/zpl.ts'
 import { writeFileSync, unlinkSync } from 'node:fs'
 
@@ -251,7 +252,14 @@ ok('resets the format prefix', zplLabel('A2707G05').startsWith('~CC^'))
 ok('barcode carries the padded field then the code', zplLabel('A2707G05').includes('^FDA     A2707G05^FS'))
 ok('the padding is six characters', 'A     '.length === 6)
 ok('line carries the dashed code and no padding', zplLabel('A2707G05').includes('^FDA27-07G05^FS'))
-ok('the prefix can be turned off', zplLabel('A2707G05', { ...DEFAULT_LABEL, barcodePrefix: '' }).includes('^FDA2707G05^FS'))
+// The zone field is derived from the code, never configured: the zone is
+// already its first character, and a mistyped one would put the wrong
+// character in every barcode of a zone with nothing on screen to show it.
+ok('the zone field follows the code', zplLabel('M0501B01').includes('^FDM     M0501B01^FS'))
+ok('a different zone, a different field', zplLabel('L0312K01').includes('^FDL     L0312K01^FS'))
+ok('six characters, left-justified', barcodeData('M0501B01') === 'M     M0501B01')
+ok('and the line never carries it', zplLabel('M0501B01').includes('^FDM05-01B01^FS'))
+ok('an empty code makes no field', barcodeData('') === '')
 ok('copies land in ^PQ', zplLabel('A2707G05', { ...DEFAULT_LABEL, copies: 12 }).includes('^PQ0012,'))
 ok('darkness is left to the printer', zplLabel('A2707G05').includes('^MD+00'))
 ok('code 39, no check digit, no interpretation line', zplLabel('A2707G05').includes('^B3N,N,0100,N,N'))
@@ -299,10 +307,10 @@ ok('scaled is one label', (z.match(/\^XA/g) ?? []).length === 1 && z.trim().ends
 // asserting 220 against its calibrated 218 is how registration drifts.
 ok('scaled states the width', z.includes('^PW812'))
 ok('scaled leaves length to the calibration', !z.includes('^LL'))
-const barcodeData = /\^B[3C]N[^^]*\^FD([^^]*)\^FS/.exec(z)?.[1]
-ok('barcode field is the padding then the code', barcodeData === 'A     A0102C01')
-ok('the dash is never inside the barcode field', !barcodeData?.includes('-'))
-ok('and without padding it is just the code', /\^B3N[^^]*\^FD([^^]*)\^FS/.exec(zplLabel('A0102C01', { ...SCALED, barcodePrefix: '' }))?.[1] === 'A0102C01')
+const barField = /\^B[3C]N[^^]*\^FD([^^]*)\^FS/.exec(z)?.[1]
+ok('barcode field is the zone field then the code', barField === 'A     A0102C01')
+ok('the dash is never inside the barcode field', !barField?.includes('-'))
+ok('scaled carries the same zone field', /\^B3N[^^]*\^FD([^^]*)\^FS/.exec(zplLabel('M0501B01', SCALED))?.[1] === 'M     M0501B01')
 ok('code 39 by default', z.includes('^B3N,'))
 ok('code 128 on request', zplLabel('A0102C01', { ...SCALED, symbology: 'code128' }).includes('^BCN,'))
 const zi = zplLabel('L0312K01', SCALED)
@@ -344,6 +352,14 @@ ok('a scaled run states its stock', narrow.includes('^PW609'))
 ok('and restores the printer afterwards', narrow.trim().endsWith('^XA^JUR^XZ'))
 ok('the site format restores it up front too', zplBatch(['L0312K01']).includes('^XA^JUR^XZ'))
 ok('restore is exported for reuse', RESTORE === '^XA^JUR^XZ')
+
+
+/* ---------- printed, scanned, stored ---------- */
+for (const code of ['M0501B01', 'A2707G05', 'L0312K01', 'Z9924Z09']) {
+  const encoded = barcodeData(code)
+  ok(`${code} survives print -> scan -> store`, normalizeScan(encoded) === code)
+}
+ok('the zone field is 14 characters, as measured off the racks', barcodeData('A2707G05').length === 14)
 
 
 /* ---------- barcode sizing ---------- */

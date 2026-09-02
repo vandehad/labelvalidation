@@ -9,7 +9,7 @@ the design decisions and, most importantly, what is not yet done.
 
 ```bash
 npm run dev        # local
-npm test           # 148 logic tests, no DB needed
+npm test           # 170 logic tests, no DB needed
 npm run build      # must stay clean
 npm run migrate    # schema, safe to re-run
 npm run user -- <name> <password> [scanner|admin]
@@ -34,12 +34,16 @@ npm run user -- <name> <password> [scanner|admin]
   whatever was scanned with a verdict of `match`, `mismatch` or `unmapped`. A
   wrong label has to be recorded before anyone can go and fix it. Do not add
   refusals there — that is what `pairs` is for.
-- **The barcode carries a padded field, the printed line does not.** The site
-  encodes `A     A2707G05` - six characters left-justified, then the code - so
-  a scanner returns all fourteen. `normalizeScan` takes what follows the last
-  space, on the client *and* the server. Without it every real scan fails the
-  format gate and is recorded as `unmapped`, which looks exactly like a missing
-  bin.
+- **The barcode carries a zone field, the printed line does not.**
+  `M0501B01` is encoded as `M     M0501B01` - the zone letter padded to six
+  characters, then the code - so a scanner returns all fourteen. `normalizeScan`
+  takes what follows the last space, on the client *and* the server. Without it
+  every real scan fails the format gate and is recorded as `unmapped`, which
+  looks exactly like a missing bin.
+- **That zone field is derived by `barcodeData`, never configured.** The zone
+  is already the first character of the code. Asking anyone to supply it invites
+  a wrong letter across a whole zone's worth of barcodes, and nothing on screen
+  would show it - the printed line looks right either way.
 - **The barcode is never dashed.** `displayCode` puts a dash after the third
   character for the human-readable line only. A scan of `A00-00A01` matches
   nothing in `pairs`, `labels` or `bin_map` - every code stored is undashed.

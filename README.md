@@ -101,8 +101,15 @@ Each label is 4x1 inch, Code 128:
 +------------------------------------+
 ```
 
-**The dash is display only.** The barcode carries `A0000A01`, because that is
-what is in the database — scanning the dashed form would match nothing.
+Two things about that, both taken from the labels the site already hangs:
+
+**The dash is display only.** It never goes in the barcode — a scan of
+`M05-01B01` matches nothing in the database.
+
+**The barcode carries a zone field**: `M     M0501B01`, the zone letter padded
+to six characters, then the code. It is derived from the code, not a setting.
+A scanner returns all fourteen characters and `normalizeScan` takes what
+follows the last space, so old and new labels scan identically.
 
 ### Getting them to the printer
 
@@ -264,7 +271,7 @@ scripts/
   create-user.mjs           add or update a user
   print-server.cjs          local relay: USB or network Zebra
   build-exe.mjs             packages the relay as a standalone .exe
-  test.ts                   148 logic tests, no database needed
+  test.ts                   170 logic tests, no database needed
 standalone/                 the offline single-file version this grew from
 ```
 
@@ -325,7 +332,7 @@ Re-running with an existing username resets that password.
 npm test
 ```
 
-148 tests over bin parsing (both old formats), label generation (every basis,
+170 tests over bin parsing (both old formats), label generation (every basis,
 floor-level `Z`, 26-letter overflow, positions within a shelf), zone ranges,
 pair validation (every refusal case), bin map parsing (headers, blanks,
 duplicates, collisions, malformed codes), audit verdicts, CSV/TSV input,
