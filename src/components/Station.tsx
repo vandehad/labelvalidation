@@ -9,7 +9,6 @@ import {
   type ZMode,
   type MapParse,
   type Verdict,
-  parseZones,
   displayCode,
   normalizeScan,
   generateLabels,
@@ -803,7 +802,7 @@ function Print({ siteId }: { siteId: number }) {
   const [copies, setCopies] = useState('1')
   const [darkness, setDarkness] = useState('0')
   const [speed, setSpeed] = useState('4')
-  const [filter, setFilter] = useState('')
+  const [zoneSel, setZoneSel] = useState<string[]>([])
   const [pickMode, setPickMode] = useState<Pick['mode']>('all')
   const [rangeFrom, setRangeFrom] = useState('')
   const [rangeTo, setRangeTo] = useState('')
@@ -859,7 +858,7 @@ function Print({ siteId }: { siteId: number }) {
   // site has never heard of must not reach the printer at all.
   const pick: Pick =
     pickMode === 'zones'
-      ? { mode: 'zones', zones: parseZones(filter) }
+      ? { mode: 'zones', zones: zoneSel }
       : pickMode === 'range'
         ? { mode: 'range', from: rangeFrom, to: rangeTo }
         : pickMode === 'list'
@@ -867,6 +866,15 @@ function Print({ siteId }: { siteId: number }) {
           : { mode: 'all' }
   const picked = pickCodes(codes ?? [], pick)
   const selected = picked.codes
+
+  // Offer the zones the site actually holds, rather than a box to guess into.
+  // Typing a zone that is not in the set returned nothing and said nothing,
+  // which reads as the app being broken.
+  const zoneCounts = new Map<string, number>()
+  for (const c of codes ?? []) zoneCounts.set(c[0], (zoneCounts.get(c[0]) ?? 0) + 1)
+  const zonesHere = [...zoneCounts.keys()].sort()
+  const toggleZone = (z: string) =>
+    setZoneSel(sel => (sel.includes(z) ? sel.filter(x => x !== z) : [...sel, z].sort()))
   const exampleCode = selected[0] ?? codes?.[0] ?? 'A0000A01'
 
   const download = () => {
@@ -979,18 +987,34 @@ function Print({ siteId }: { siteId: number }) {
             <option value="list">Just these — one code per line, or scan them</option>
           </select>
         </div>
-        {pickMode === 'zones' && (
-          <div>
-            <label>Zones</label>
-            <input
-              value={filter}
-              onChange={e => setFilter(e.target.value)}
-              placeholder="A-C, K"
-              style={{ textTransform: 'uppercase' }}
-            />
+      </div>
+
+      {pickMode === 'zones' && (
+        <div style={{ marginTop: 4 }}>
+          <label>Zones in this site — click to include</label>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+            {zonesHere.map(z => {
+              const on = zoneSel.includes(z)
+              return (
+                <button
+                  key={z}
+                  className={`act ${on ? '' : 'ghost'}`}
+                  style={{ padding: '5px 12px' }}
+                  onClick={() => toggleZone(z)}
+                >
+                  {z} <span style={{ opacity: 0.7, fontWeight: 400 }}>{zoneCounts.get(z)?.toLocaleString()}</span>
+                </button>
+              )
+            })}
+            {!zonesHere.length && <span className="hint">No labels stored yet — generate a set first.</span>}
           </div>
-        )}
-        {pickMode === 'range' && (
+          <p className="hint" style={{ marginTop: 6 }}>
+            {zoneSel.length ? `${zoneSel.join(', ')} selected.` : 'None selected, so all of them.'}
+          </p>
+        </div>
+      )}
+      {pickMode === 'range' && (
+        <div className="row" style={{ marginTop: 4 }}>
           <>
             <div>
               <label>From</label>
@@ -1001,8 +1025,8 @@ function Print({ siteId }: { siteId: number }) {
               <input value={rangeTo} onChange={e => setRangeTo(e.target.value)} placeholder="last" style={{ textTransform: 'uppercase' }} />
             </div>
           </>
-        )}
-      </div>
+        </div>
+      )}
 
       {pickMode === 'list' && (
         <>
@@ -1046,6 +1070,19 @@ function Print({ siteId }: { siteId: number }) {
           )}
         </div>
       </div>
+
+      {!selected.length && (codes?.length ?? 0) > 0 && (
+        <div className="msg show warn" style={{ marginTop: 10 }}>
+          Nothing selected, so there is nothing to print.{' '}
+          {pickMode === 'zones'
+            ? `This site holds ${zonesHere.join(', ') || 'no'} zone${zonesHere.length === 1 ? '' : 's'} — pick one above.`
+            : pickMode === 'range'
+              ? 'No stored code falls between those two. Leave an end blank for an open bound.'
+              : pickMode === 'list'
+                ? "None of those codes are in this site's label set."
+                : ''}
+        </div>
+      )}
 
       <div className="btns" style={{ marginTop: 12 }}>
         <button className="act" onClick={print} disabled={busy || !selected.length}>
