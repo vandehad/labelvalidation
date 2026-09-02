@@ -95,8 +95,29 @@ export function parseZones(input: string): string[] {
 export type Basis = 'global' | 'zone' | 'aisle' | 'actual'
 export type ZMode = 'auto' | 'always' | 'never'
 
+/**
+ * One stretch of aisles sharing a zone and a rack shape.
+ *
+ * A warehouse is rarely uniform. Aisles 1-26 might be zone A at 24 columns of
+ * 10 shelves, and 27-36 zone B at 18 columns of 8, and the next site will
+ * divide differently again. One block per stretch, in whatever order suits -
+ * they are sorted on the way out.
+ */
+export type ZoneBlock = {
+  zone: string
+  aisleFrom: number
+  aisleTo: number
+  /** Columns in every aisle of this block. */
+  columns: number
+  /** Shelves in every column of this block. */
+  shelves: number
+  /** Positions within each shelf. Defaults to 1, which is every site so far. */
+  positions?: number
+}
+
 export type GenSpec =
   | { mode: 'derive'; oldBins: string[]; basis: Basis; zMode: ZMode }
+  | { mode: 'blocks'; blocks: ZoneBlock[]; zMode: ZMode }
   | {
       mode: 'manual'
       zones: string[]
@@ -117,12 +138,26 @@ export type GenResult = {
   tallest: number
   capped: Array<{ zone: string; aisle: number; col: number; needed: number }>
   unparsed: string[]
+  /**
+   * Anything the spec asked for that could not be honoured, in plain words -
+   * a block with no zone letter, or two blocks claiming the same aisle. The
+   * unique index on `labels` would swallow a collision silently; saying so is
+   * the whole point.
+   */
+  problems: string[]
 }
 
 export function generateLabels(spec: GenSpec): GenResult {
-  type Col = { zone: string; aisle: number; col: number; shelves: number; floor: boolean }
+  // Positions live on the column, not the spec: with blocks, one stretch of
+  // aisles can hold several positions per shelf while the next holds one.
+  type Col = { zone: string; aisle: number; col: number; shelves: number; positions: number; floor: boolean }
   const cols: Col[] = []
   const unparsed: string[] = []
+  const problems: string[] = []
+
+  // Two digits is the ceiling on both counts: a third would change the length
+  // of every code in the system.
+  const clampPos = (n: unknown) => Math.min(99, Math.max(1, Math.floor(Number(n) || 1)))
 
   if (spec.mode === 'derive') {
     const map = new Map<string, { zone: string; aisle: number; col: number; shelves: Set<number>; floor: boolean }>()
@@ -144,7 +179,7 @@ export function generateLabels(spec: GenSpec): GenResult {
       else e.shelves.add(p.shelf)
     }
     const all = [...map.values()]
-    if (!all.length) return { labels: [], columns: 0, zones: 0, tallest: 0, capped: [], unparsed }
+    if (!all.length) return { labels: [], columns: 0, zones: 0, tallest: 0, capped: [], unparsed, problems }
 
     const globalMax = Math.max(...all.map(e => e.shelves.size))
     const byZone = new Map<string, number>()
@@ -163,18 +198,45 @@ export function generateLabels(spec: GenSpec): GenResult {
             : spec.basis === 'aisle'
               ? byAisle.get(`${e.zone}|${e.aisle}`)!
               : e.shelves.size
-      cols.push({ zone: e.zone, aisle: e.aisle, col: e.col, shelves: n, floor: e.floor })
+      cols.push({ zone: e.zone, aisle: e.aisle, col: e.col, shelves: n, positions: 1, floor: e.floor })
     }
+  } else if (spec.mode === 'blocks') {
+    // Which block claimed each aisle, so a second claim can be named rather
+    // than silently deduplicated by the unique index on `labels`.
+    const claimed = new Map<string, number>()
+    spec.blocks.forEach((b, i) => {
+      const zone = String(b.zone ?? '').trim().toUpperCase()
+      if (!/^[A-Z]$/.test(zone)) {
+        problems.push(`Block ${i + 1} has no single-letter zone, so it was skipped.`)
+        return
+      }
+      const from = Math.min(Math.floor(b.aisleFrom), Math.floor(b.aisleTo))
+      const to = Math.max(Math.floor(b.aisleFrom), Math.floor(b.aisleTo))
+      const columns = Math.max(1, Math.floor(b.columns))
+      const shelves = Math.max(1, Math.floor(b.shelves))
+      const positions = clampPos(b.positions)
+      if (!Number.isFinite(from) || !Number.isFinite(to)) {
+        problems.push(`Block ${i + 1} (zone ${zone}) has no aisle range, so it was skipped.`)
+        return
+      }
+      for (let a = from; a <= to; a++) {
+        const key = `${zone}|${a}`
+        const first = claimed.get(key)
+        if (first !== undefined && first !== i) {
+          problems.push(`Zone ${zone} aisle ${a} is claimed by block ${first + 1} and block ${i + 1}.`)
+        } else {
+          claimed.set(key, i)
+        }
+        for (let c = 1; c <= columns; c++) cols.push({ zone, aisle: a, col: c, shelves, positions, floor: false })
+      }
+    })
   } else {
+    const positions = clampPos(spec.positions)
     for (const z of spec.zones)
       for (let a = spec.aisleFrom; a <= spec.aisleTo; a++)
         for (let c = spec.colFrom; c <= spec.colTo; c++)
-          cols.push({ zone: z, aisle: a, col: c, shelves: spec.shelves, floor: false })
+          cols.push({ zone: z, aisle: a, col: c, shelves: spec.shelves, positions, floor: false })
   }
-
-  // Positions run 01..N within every shelf. 99 is the ceiling - the field is
-  // two digits, and a third would change the length of every code.
-  const positions = spec.mode === 'manual' ? Math.min(99, Math.max(1, Math.floor(spec.positions ?? 1))) : 1
 
   const labels: string[] = []
   const capped: GenResult['capped'] = []
@@ -187,19 +249,88 @@ export function generateLabels(spec: GenSpec): GenResult {
       n = limit
     }
     for (let i = 0; i < n; i++)
-      for (let p = 1; p <= positions; p++)
+      for (let p = 1; p <= e.positions; p++)
         labels.push(newCode(e.zone, e.aisle, e.col, String.fromCharCode(65 + i), p))
-    if (wantZ) for (let p = 1; p <= positions; p++) labels.push(newCode(e.zone, e.aisle, e.col, 'Z', p))
+    if (wantZ) for (let p = 1; p <= e.positions; p++) labels.push(newCode(e.zone, e.aisle, e.col, 'Z', p))
   }
   labels.sort()
+  const unique = [...new Set(labels)]
+  if (unique.length !== labels.length) {
+    problems.push(`${labels.length - unique.length} label(s) were produced more than once and collapsed.`)
+  }
   return {
-    labels,
+    labels: unique,
     columns: cols.length,
     zones: new Set(cols.map(c => c.zone)).size,
     tallest: cols.length ? Math.max(...cols.map(c => c.shelves)) : 0,
     capped,
     unparsed,
+    problems,
   }
+}
+
+/**
+ * Which of a site's stored labels to print.
+ *
+ * Reprinting is not a special case of generating: a damaged label has to come
+ * out identical to the one it replaces, so the codes come from what is stored
+ * rather than from re-running the generator. A code that is not in the set is
+ * reported instead of printed - printing a label the database has never heard
+ * of is how a rack ends up with a bin nothing can find.
+ */
+export type Pick =
+  | { mode: 'all' }
+  | { mode: 'zones'; zones: string[] }
+  | { mode: 'range'; from: string; to: string }
+  | { mode: 'list'; codes: string[] }
+
+export type PickResult = {
+  codes: string[]
+  /** Asked for but not in the stored set. */
+  missing: string[]
+}
+
+export function pickCodes(all: string[], pick: Pick): PickResult {
+  const have = new Set(all)
+
+  if (pick.mode === 'zones') {
+    const zones = new Set(pick.zones)
+    return { codes: zones.size ? all.filter(c => zones.has(c[0])) : all, missing: [] }
+  }
+
+  if (pick.mode === 'range') {
+    // Codes sort the way the racks run - zone, then aisle, then column, then
+    // shelf - so a range is a plain comparison. Either end may be left blank
+    // for an open bound, and a backwards range is read as intended.
+    let from = normalizeScan(pick.from)
+    let to = normalizeScan(pick.to)
+    if (from && to && from > to) [from, to] = [to, from]
+    return {
+      codes: all.filter(c => (!from || c >= from) && (!to || c <= to)),
+      missing: [],
+    }
+  }
+
+  if (pick.mode === 'list') {
+    // normalizeScan, so a label can be scanned straight into the box: the gun
+    // returns the zone field too, and the code is what follows the last space.
+    const wanted = pick.codes.map(normalizeScan).filter(Boolean)
+    const seen = new Set<string>()
+    const codes: string[] = []
+    const missing: string[] = []
+    for (const c of wanted) {
+      if (seen.has(c)) continue
+      seen.add(c)
+      if (have.has(c)) codes.push(c)
+      else missing.push(c)
+    }
+    // Print in rack order, not the order they were typed - a reprint run
+    // should come off the roll in the order someone walks the aisle.
+    codes.sort()
+    return { codes, missing }
+  }
+
+  return { codes: all, missing: [] }
 }
 
 /** Reasons a pair is refused. Checked client-side for speed and again on the server. */

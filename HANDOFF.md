@@ -198,6 +198,26 @@ normal driver prints the text of the ZPL. The Windows path uses PowerShell with
 an inline `winspool` P/Invoke rather than a native module, because a native
 module would want a compiler on a warehouse PC.
 
+**Zone blocks, not one uniform shape.** A warehouse divides into stretches of
+aisles - 1-26 zone A at 24 columns of 10 shelves, 27-36 zone B at 18 of 8 - and
+the next site divides differently. `GenSpec` has a `blocks` mode taking one
+`ZoneBlock` per stretch, each with its own columns, shelves and positions.
+Positions moved onto the column for this: one block can hold several per shelf
+while the next holds one.
+
+Overlapping blocks are **reported**, in `GenResult.problems`. `UNIQUE
+(site_id, code)` with `ON CONFLICT DO NOTHING` would absorb the duplicates in
+silence, and a label set quietly smaller than asked for is not noticed until
+the racks are hung.
+
+**A reprint is not a small generation run.** `pickCodes` selects from the
+site's *stored* labels - all, whole zones, a range between two codes, or a
+typed-or-scanned list - because a replacement has to be identical to the label
+it replaces. A code the site has no record of comes back in `missing` rather
+than going to the printer; a rack with a bin the database cannot find is the
+failure this app exists to prevent. List entries go through `normalizeScan`, so
+a damaged label can be scanned straight into the box.
+
 **Superset then reconcile.** Print more labels than needed, scan what is real,
 then delete the leftovers. The alternative — print exactly what the old data
 implies — is what failed at site 18.
@@ -209,7 +229,7 @@ implies — is what failed at site 18.
 Verified in this repo:
 
 - `npm run build` — clean, all routes correctly dynamic
-- `npm test` — 170 logic tests pass
+- `npm test` — 200 logic tests pass
 - `npx tsc --noEmit` — clean
 - 37 further checks against the live Neon database, end to end through the
   HTTP routes — see the section below

@@ -60,6 +60,9 @@ export async function POST(req: Request) {
       capped: result.capped,
       unparsed: result.unparsed.slice(0, 50),
       unparsedCount: result.unparsed.length,
+      // Overlapping blocks and skipped ones. The unique index would swallow a
+      // collision without a word; the caller has to be told.
+      problems: result.problems,
     })
   } catch (e) {
     return fail(e)

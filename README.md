@@ -85,11 +85,34 @@ integration has provisioned anything.
 
 ## Generating and printing a batch
 
-The **Labels** tab builds the set either from an old bin list or, with
-*A batch by range*, from the shape of the warehouse: zones (`A-Z`, or `A-E,K`),
-an aisle range, columns per aisle, shelves per column, and positions per shelf.
-The count is shown before anything is generated, because 26 zones x 24 columns
-x 10 shelves is 62,400 labels and roughly 62 rolls.
+The **Labels** tab builds the set from an old bin list, or from **zone
+blocks** — one row per stretch of aisles, because a warehouse is rarely
+uniform:
+
+| Zone | Aisles | Columns/aisle | Shelves/column | Positions/shelf |
+| --- | --- | --- | --- | --- |
+| A | 1 – 26 | 24 | 10 | 1 |
+| B | 27 – 36 | 18 | 8 | 1 |
+
+Each block has its own shape, and the next site divides differently again. The
+count, the first and last code, and any collision are shown before anything is
+generated — 26 aisles x 24 columns x 10 shelves is 6,240 labels in zone A
+alone, and roughly six rolls.
+
+If two blocks claim the same aisle, it says so. The unique index on `labels`
+would quietly collapse the duplicates otherwise, and a silently smaller label
+set is exactly the sort of thing that is not noticed until the racks are hung.
+
+### Reprinting
+
+The Print card takes **every label**, **whole zones**, **a range** from one
+code to another, or **just these** — a list typed in or scanned straight off
+the damaged labels, since the gun returns the zone field and it is stripped on
+the way in.
+
+Reprints come out of what is stored, never out of the generator again: a
+replacement has to be identical to the label it replaces. A code the site has
+no record of is reported rather than printed.
 
 Each label is 4x1 inch, Code 128:
 
@@ -271,7 +294,7 @@ scripts/
   create-user.mjs           add or update a user
   print-server.cjs          local relay: USB or network Zebra
   build-exe.mjs             packages the relay as a standalone .exe
-  test.ts                   170 logic tests, no database needed
+  test.ts                   200 logic tests, no database needed
 standalone/                 the offline single-file version this grew from
 ```
 
@@ -332,7 +355,7 @@ Re-running with an existing username resets that password.
 npm test
 ```
 
-170 tests over bin parsing (both old formats), label generation (every basis,
+200 tests over bin parsing (both old formats), label generation (every basis,
 floor-level `Z`, 26-letter overflow, positions within a shelf), zone ranges,
 pair validation (every refusal case), bin map parsing (headers, blanks,
 duplicates, collisions, malformed codes), audit verdicts, CSV/TSV input,

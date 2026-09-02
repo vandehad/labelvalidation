@@ -9,7 +9,7 @@ the design decisions and, most importantly, what is not yet done.
 
 ```bash
 npm run dev        # local
-npm test           # 170 logic tests, no DB needed
+npm test           # 200 logic tests, no DB needed
 npm run build      # must stay clean
 npm run migrate    # schema, safe to re-run
 npm run user -- <name> <password> [scanner|admin]
@@ -50,6 +50,14 @@ npm run user -- <name> <password> [scanner|admin]
 - **No zone/aisle validation on pairing.** It was built, then removed: a
   scanner covers ground faster than they re-declare where they stand, so it
   mostly refused correct scans. `pairs.location` is a free-text note now.
+- **A reprint comes out of what is stored, never out of the generator.** A
+  replacement label has to be identical to the one it replaces, so `pickCodes`
+  selects from the site's stored set and reports a code that is not in it
+  rather than printing it. Printing a code the database has never heard of is
+  how a rack ends up with a bin nothing can find.
+- **`generateLabels` reports what it could not honour.** Overlapping zone
+  blocks would otherwise be swallowed by `UNIQUE (site_id, code)` without a
+  word. `problems` carries them out to the caller; do not drop it.
 - Scanner input must never be cached. Routes are `force-dynamic`.
 - Refusals happen client-side for speed **and** server-side for truth. Keep
   both in step; `validatePair` in `src/lib/bins.ts` is shared by each.

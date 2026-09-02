@@ -10,9 +10,12 @@ import {
   type MapParse,
   type Verdict,
   parseZones,
-  newCode,
   displayCode,
   normalizeScan,
+  generateLabels,
+  pickCodes,
+  type ZoneBlock,
+  type Pick,
 } from '@/lib/bins'
 import { readTable, parseDelimited } from '@/lib/sheet'
 import { zplBatch, barcodeData, type LabelSpec, type Symbology } from '@/lib/zpl'
@@ -487,18 +490,13 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
 /* ------------------------------------------------------------------ */
 
 function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: () => void }) {
-  const [mode, setMode] = useState<'derive' | 'batch'>('derive')
+  const [mode, setMode] = useState<'derive' | 'blocks'>('derive')
   const [text, setText] = useState('')
   const [basis, setBasis] = useState<Basis>('global')
   const [zMode, setZMode] = useState<ZMode>('auto')
-
-  // batch
-  const [zonesText, setZonesText] = useState('A-Z')
-  const [aisleFrom, setAisleFrom] = useState('1')
-  const [aisleTo, setAisleTo] = useState('1')
-  const [columns, setColumns] = useState('24')
-  const [shelves, setShelves] = useState('10')
-  const [positions, setPositions] = useState('1')
+  const [blocks, setBlocks] = useState<ZoneBlock[]>([
+    { zone: 'A', aisleFrom: 1, aisleTo: 26, columns: 24, shelves: 10, positions: 1 },
+  ])
 
   const [busy, setBusy] = useState(false)
   const [res, setRes] = useState<{
@@ -509,6 +507,7 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
     capped: Array<{ zone: string; aisle: number; col: number; needed: number }>
     unparsedCount: number
     unparsed: string[]
+    problems?: string[]
   } | null>(null)
   const [err, setErr] = useState('')
 
@@ -520,19 +519,30 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
       </div>
     )
 
-  const zones = parseZones(zonesText)
-  const batchSpec = {
-    mode: 'batch' as const,
-    zones,
-    aisleFrom: Math.max(0, Number(aisleFrom) || 0),
-    aisleTo: Math.max(0, Number(aisleTo) || 0),
-    columns: Math.max(1, Number(columns) || 1),
-    shelves: Math.max(1, Number(shelves) || 1),
-    positions: Math.max(1, Number(positions) || 1),
-  }
-  const aisleCount = Math.max(0, batchSpec.aisleTo - batchSpec.aisleFrom + 1)
-  const perColumn = (batchSpec.shelves + (zMode === 'always' ? 1 : 0)) * batchSpec.positions
-  const batchCount = zones.length * aisleCount * batchSpec.columns * perColumn
+  const setBlock = (i: number, patch: Partial<ZoneBlock>) =>
+    setBlocks(b => b.map((x, j) => (j === i ? { ...x, ...patch } : x)))
+  const addBlock = () =>
+    setBlocks(b => {
+      const last = b[b.length - 1]
+      // Start the next block where the last one ended, which is how a
+      // warehouse is actually divided up.
+      return [
+        ...b,
+        {
+          zone: last ? String.fromCharCode(Math.min(90, last.zone.charCodeAt(0) + 1)) : 'A',
+          aisleFrom: last ? last.aisleTo + 1 : 1,
+          aisleTo: last ? last.aisleTo + 10 : 10,
+          columns: last?.columns ?? 24,
+          shelves: last?.shelves ?? 10,
+          positions: last?.positions ?? 1,
+        },
+      ]
+    })
+
+  // Preview the whole thing locally. generateLabels is pure, so the count and
+  // the collisions are known before anything is sent.
+  const preview =
+    mode === 'blocks' ? generateLabels({ mode: 'blocks', blocks, zMode }) : null
 
   const gen = async () => {
     setBusy(true)
@@ -544,20 +554,9 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
         if (!oldBins.length) throw new Error('Paste the old bin list first.')
         spec = { mode: 'derive', oldBins, basis, zMode }
       } else {
-        if (!zones.length) throw new Error('No zones - try A-Z, or A-E,K.')
-        if (aisleCount < 1) throw new Error('The aisle range is backwards.')
-        if (batchSpec.shelves > 26) throw new Error('More than 26 shelves has no letter left to use.')
-        spec = {
-          mode: 'manual',
-          zones,
-          aisleFrom: batchSpec.aisleFrom,
-          aisleTo: batchSpec.aisleTo,
-          colFrom: 1,
-          colTo: batchSpec.columns,
-          shelves: batchSpec.shelves,
-          positions: batchSpec.positions,
-          zMode,
-        }
+        if (!blocks.length) throw new Error('Add at least one block.')
+        if (!preview?.labels.length) throw new Error('That would produce no labels — check the zones and ranges.')
+        spec = { mode: 'blocks', blocks, zMode }
       }
       const r = await api('/api/labels', { method: 'POST', body: JSON.stringify({ siteId, spec }) })
       setRes(r)
@@ -579,11 +578,11 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
         </p>
         {err && <div className="msg show bad">{err}</div>}
         <div className="row">
-          <div style={{ flex: '1 1 320px' }}>
+          <div style={{ flex: '1 1 340px' }}>
             <label>Where the racks come from</label>
-            <select value={mode} onChange={e => setMode(e.target.value as 'derive' | 'batch')}>
+            <select value={mode} onChange={e => setMode(e.target.value as 'derive' | 'blocks')}>
               <option value="derive">An old bin list — work out the racks from it</option>
-              <option value="batch">A batch by range — say the shape of the warehouse</option>
+              <option value="blocks">Zone blocks — describe the warehouse</option>
             </select>
           </div>
           <div>
@@ -614,71 +613,122 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
           </>
         ) : (
           <>
-            <div className="row">
-              <div style={{ flex: '1 1 220px' }}>
-                <label>Zones</label>
-                <input
-                  value={zonesText}
-                  onChange={e => setZonesText(e.target.value)}
-                  placeholder="A-Z, or A-E,K"
-                  style={{ textTransform: 'uppercase' }}
-                />
-              </div>
-              <div>
-                <label>Aisle from</label>
-                <input type="number" min={0} value={aisleFrom} onChange={e => setAisleFrom(e.target.value)} />
-              </div>
-              <div>
-                <label>Aisle to</label>
-                <input type="number" min={0} value={aisleTo} onChange={e => setAisleTo(e.target.value)} />
-              </div>
-              <div>
-                <label>Columns per aisle</label>
-                <input type="number" min={1} value={columns} onChange={e => setColumns(e.target.value)} />
-              </div>
-              <div>
-                <label>Shelves per column</label>
-                <input type="number" min={1} max={26} value={shelves} onChange={e => setShelves(e.target.value)} />
-              </div>
-              <div>
-                <label>Positions per shelf</label>
-                <input type="number" min={1} max={99} value={positions} onChange={e => setPositions(e.target.value)} />
-              </div>
+            <p className="hint">
+              One row per stretch of aisles. A warehouse is rarely uniform — aisles 1–26 might be zone A at 24
+              columns of 10 shelves, and 27–36 zone B at 18 of 8.
+            </p>
+            <div className="scroll" style={{ maxHeight: 340 }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{ width: 70 }}>ZONE</th>
+                    <th>AISLES FROM</th>
+                    <th>TO</th>
+                    <th>COLUMNS / AISLE</th>
+                    <th>SHELVES / COLUMN</th>
+                    <th>POSITIONS / SHELF</th>
+                    <th>LABELS</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {blocks.map((b, i) => {
+                    const aisles = Math.max(0, Math.abs(b.aisleTo - b.aisleFrom) + 1)
+                    const each = (b.shelves + (zMode === 'always' ? 1 : 0)) * Math.max(1, b.positions ?? 1)
+                    return (
+                      <tr key={i}>
+                        <td>
+                          <input
+                            value={b.zone}
+                            maxLength={1}
+                            onChange={e => setBlock(i, { zone: e.target.value.toUpperCase() })}
+                            style={{ textTransform: 'uppercase', width: 52 }}
+                          />
+                        </td>
+                        <td>
+                          <input type="number" min={0} value={b.aisleFrom} onChange={e => setBlock(i, { aisleFrom: Number(e.target.value) })} />
+                        </td>
+                        <td>
+                          <input type="number" min={0} value={b.aisleTo} onChange={e => setBlock(i, { aisleTo: Number(e.target.value) })} />
+                        </td>
+                        <td>
+                          <input type="number" min={1} value={b.columns} onChange={e => setBlock(i, { columns: Number(e.target.value) })} />
+                        </td>
+                        <td>
+                          <input type="number" min={1} max={26} value={b.shelves} onChange={e => setBlock(i, { shelves: Number(e.target.value) })} />
+                        </td>
+                        <td>
+                          <input type="number" min={1} max={99} value={b.positions ?? 1} onChange={e => setBlock(i, { positions: Number(e.target.value) })} />
+                        </td>
+                        <td style={{ whiteSpace: 'nowrap' }}>{(aisles * b.columns * each).toLocaleString()}</td>
+                        <td>
+                          <button
+                            className="act ghost"
+                            style={{ padding: '3px 9px' }}
+                            onClick={() => setBlocks(bs => bs.filter((_, j) => j !== i))}
+                            disabled={blocks.length === 1}
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
-            <div className="stats" style={{ marginTop: 4 }}>
-              <Stat n={zones.length} l="zones" />
-              <Stat n={aisleCount} l="aisles each" />
-              <Stat n={batchSpec.columns} l="columns each" />
-              <Stat n={perColumn} l="labels per column" />
-              <Stat n={batchCount.toLocaleString()} l="labels in total" />
+            <div className="btns" style={{ marginTop: 8 }}>
+              <button className="act ghost" onClick={addBlock}>
+                Add a block
+              </button>
             </div>
-            {batchCount > 20000 && (
-              <div className="msg show warn">
-                {batchCount.toLocaleString()} labels is a lot of stock — around{' '}
-                {Math.ceil(batchCount / 1000).toLocaleString()} rolls of 1,000. Worth generating one zone at a
-                time.
-              </div>
-            )}
-            {zones.length > 0 && (
-              <p className="hint">
-                First and last: <code>{newCode(zones[0], batchSpec.aisleFrom, 1, 'A', 1)}</code> …{' '}
-                <code>
-                  {newCode(
-                    zones[zones.length - 1],
-                    batchSpec.aisleTo,
-                    batchSpec.columns,
-                    zMode === 'always' ? 'Z' : String.fromCharCode(64 + batchSpec.shelves),
-                    batchSpec.positions,
-                  )}
-                </code>
-              </p>
+
+            {preview && (
+              <>
+                <div className="stats" style={{ marginTop: 10 }}>
+                  <Stat n={preview.zones} l="zones" />
+                  <Stat n={preview.columns.toLocaleString()} l="columns" />
+                  <Stat n={preview.tallest} l="tallest column" />
+                  <Stat n={preview.labels.length.toLocaleString()} l="labels in total" />
+                  <Stat n={Math.ceil(preview.labels.length / 1000).toLocaleString()} l="rolls of 1,000" />
+                </div>
+                {preview.problems.length > 0 && (
+                  <div className="msg show bad">
+                    {preview.problems.slice(0, 5).map((x, i) => (
+                      <div key={i}>{x}</div>
+                    ))}
+                    {preview.problems.length > 5 && <div>…and {preview.problems.length - 5} more.</div>}
+                  </div>
+                )}
+                {preview.capped.length > 0 && (
+                  <div className="msg show warn">
+                    {preview.capped.length} column(s) need more than 26 shelves — the alphabet runs out.
+                  </div>
+                )}
+                {preview.labels.length > 20000 && preview.problems.length === 0 && (
+                  <div className="msg show warn">
+                    {preview.labels.length.toLocaleString()} labels is a lot of stock. Worth doing one zone at a
+                    time.
+                  </div>
+                )}
+                {preview.labels.length > 0 && (
+                  <p className="hint">
+                    First <code>{preview.labels[0]}</code>, last{' '}
+                    <code>{preview.labels[preview.labels.length - 1]}</code>.
+                  </p>
+                )}
+              </>
             )}
           </>
         )}
 
         <div className="btns" style={{ marginTop: 10 }}>
-          <button className="act" onClick={gen} disabled={busy}>
-            {busy ? 'Generating…' : mode === 'batch' ? `Generate ${batchCount.toLocaleString()} and store` : 'Generate and store'}
+          <button className="act" onClick={gen} disabled={busy || (mode === 'blocks' && !preview?.labels.length)}>
+            {busy
+              ? 'Generating…'
+              : mode === 'blocks'
+                ? `Generate ${(preview?.labels.length ?? 0).toLocaleString()} and store`
+                : 'Generate and store'}
           </button>
           <a className="act ghost" href={`/api/export?site=${siteId}`} style={{ textDecoration: 'none' }}>
             Export workbook (.xlsx)
@@ -697,6 +747,13 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
             <Stat n={res.capped.length} l="capped at 26" />
             <Stat n={res.unparsedCount} l="unreadable" />
           </div>
+          {(res.problems ?? []).length > 0 && (
+            <div className="msg show bad">
+              {(res.problems ?? []).slice(0, 5).map((x, i) => (
+                <div key={i}>{x}</div>
+              ))}
+            </div>
+          )}
           {res.capped.length > 0 && (
             <div className="msg show warn">
               {res.capped.length} column(s) need more than 26 shelves and were capped — the alphabet runs
@@ -747,6 +804,10 @@ function Print({ siteId }: { siteId: number }) {
   const [darkness, setDarkness] = useState('0')
   const [speed, setSpeed] = useState('4')
   const [filter, setFilter] = useState('')
+  const [pickMode, setPickMode] = useState<Pick['mode']>('all')
+  const [rangeFrom, setRangeFrom] = useState('')
+  const [rangeTo, setRangeTo] = useState('')
+  const [list, setList] = useState('')
   const [codes, setCodes] = useState<string[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
@@ -793,8 +854,19 @@ function Print({ siteId }: { siteId: number }) {
     }
   }
 
-  const zones = parseZones(filter)
-  const selected = (codes ?? []).filter(c => !zones.length || zones.includes(c[0]))
+  // Reprints come out of what is stored, never out of the generator again: a
+  // replacement has to be identical to the label it replaces, and a code the
+  // site has never heard of must not reach the printer at all.
+  const pick: Pick =
+    pickMode === 'zones'
+      ? { mode: 'zones', zones: parseZones(filter) }
+      : pickMode === 'range'
+        ? { mode: 'range', from: rangeFrom, to: rangeTo }
+        : pickMode === 'list'
+          ? { mode: 'list', codes: list.split(/\r?\n/) }
+          : { mode: 'all' }
+  const picked = pickCodes(codes ?? [], pick)
+  const selected = picked.codes
   const exampleCode = selected[0] ?? codes?.[0] ?? 'A0000A01'
 
   const download = () => {
@@ -895,11 +967,61 @@ function Print({ siteId }: { siteId: number }) {
           <label>Nudge left/right (dots)</label>
           <input type="number" value={nudge} onChange={e => setNudge(e.target.value)} placeholder="0" />
         </div>
-        <div>
-          <label>Only these zones</label>
-          <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="all" style={{ textTransform: 'uppercase' }} />
-        </div>
       </div>
+
+      <div className="row" style={{ marginTop: 4 }}>
+        <div style={{ flex: '1 1 260px' }}>
+          <label>What to print</label>
+          <select value={pickMode} onChange={e => setPickMode(e.target.value as Pick['mode'])}>
+            <option value="all">Every label stored for this site</option>
+            <option value="zones">Whole zones</option>
+            <option value="range">A range, from one code to another</option>
+            <option value="list">Just these — one code per line, or scan them</option>
+          </select>
+        </div>
+        {pickMode === 'zones' && (
+          <div>
+            <label>Zones</label>
+            <input
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              placeholder="A-C, K"
+              style={{ textTransform: 'uppercase' }}
+            />
+          </div>
+        )}
+        {pickMode === 'range' && (
+          <>
+            <div>
+              <label>From</label>
+              <input value={rangeFrom} onChange={e => setRangeFrom(e.target.value)} placeholder="first" style={{ textTransform: 'uppercase' }} />
+            </div>
+            <div>
+              <label>To</label>
+              <input value={rangeTo} onChange={e => setRangeTo(e.target.value)} placeholder="last" style={{ textTransform: 'uppercase' }} />
+            </div>
+          </>
+        )}
+      </div>
+
+      {pickMode === 'list' && (
+        <>
+          <label>Codes — one per line. A damaged label can be scanned straight in.</label>
+          <textarea
+            value={list}
+            onChange={e => setList(e.target.value)}
+            placeholder={'A0102B01\nA0102C01'}
+            style={{ minHeight: 90, fontFamily: 'ui-monospace, monospace' }}
+          />
+          {picked.missing.length > 0 && (
+            <div className="msg show bad">
+              {picked.missing.length} code(s) are not in this site's label set, so they will not be printed:{' '}
+              {picked.missing.slice(0, 6).join(', ')}
+              {picked.missing.length > 6 ? '…' : ''}. Generate them first, or check the code.
+            </div>
+          )}
+        </>
+      )}
 
       <div className="stats" style={{ marginTop: 4 }}>
         <Stat n={(codes?.length ?? 0).toLocaleString()} l="labels stored" />

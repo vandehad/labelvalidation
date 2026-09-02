@@ -14,6 +14,7 @@ import {
   displayCode,
   parseZones,
   normalizeScan,
+  pickCodes,
 } from '../src/lib/bins.ts'
 import { makeXlsx } from '../src/lib/xlsx.ts'
 import { parseDelimited, readXlsxRows } from '../src/lib/sheet.ts'
@@ -86,6 +87,87 @@ ok('overflow flagged when Z reserved', gz.capped.length === 1 && gz.capped[0].ne
 
 const gu = generateLabels({ mode: 'derive', oldBins: ['A-1-1-1', 'JUNK', ''], basis: 'actual', zMode: 'auto' })
 ok('unparsable captured', gu.unparsed.length === 1 && gu.unparsed[0] === 'JUNK')
+
+/* ---------- zone blocks ---------- */
+// A warehouse is rarely uniform: one stretch of aisles is zone A at one rack
+// shape, the next is zone B at another.
+const wh = generateLabels({
+  mode: 'blocks',
+  zMode: 'never',
+  blocks: [
+    { zone: 'A', aisleFrom: 1, aisleTo: 26, columns: 24, shelves: 10 },
+    { zone: 'B', aisleFrom: 27, aisleTo: 36, columns: 18, shelves: 8 },
+  ],
+})
+ok('zone A block: 26 x 24 x 10', wh.labels.filter(l => l[0] === 'A').length === 26 * 24 * 10)
+ok('zone B block: 10 x 18 x 8', wh.labels.filter(l => l[0] === 'B').length === 10 * 18 * 8)
+ok('both blocks together', wh.labels.length === 26 * 24 * 10 + 10 * 18 * 8)
+ok('the aisle ranges are kept apart', wh.labels.filter(l => l[0] === 'B').every(l => +l.slice(1, 3) >= 27))
+ok('nothing to report on a clean spec', wh.problems.length === 0)
+ok('every label is still a valid code', wh.labels.every(l => NEW_PATTERN.test(l)))
+ok('and none is produced twice', new Set(wh.labels).size === wh.labels.length)
+
+// Shape can differ per block, positions included.
+const perBlock = generateLabels({
+  mode: 'blocks',
+  zMode: 'never',
+  blocks: [
+    { zone: 'A', aisleFrom: 1, aisleTo: 1, columns: 1, shelves: 2, positions: 3 },
+    { zone: 'B', aisleFrom: 1, aisleTo: 1, columns: 1, shelves: 2, positions: 1 },
+  ],
+})
+ok('positions are per block, not per run', perBlock.labels.filter(l => l[0] === 'A').length === 6)
+ok('the next block is unaffected', perBlock.labels.filter(l => l[0] === 'B').length === 2)
+
+// An aisle claimed twice would be silently deduplicated by the unique index
+// on `labels`. Saying so is the point.
+const clash = generateLabels({
+  mode: 'blocks',
+  zMode: 'never',
+  blocks: [
+    { zone: 'A', aisleFrom: 1, aisleTo: 5, columns: 2, shelves: 2 },
+    { zone: 'A', aisleFrom: 4, aisleTo: 8, columns: 2, shelves: 2 },
+  ],
+})
+ok('an overlapping aisle is named', clash.problems.some(x => x.includes('aisle 4') && x.includes('block 1') && x.includes('block 2')))
+ok('both overlapping aisles are named', clash.problems.filter(x => x.includes('claimed by')).length === 2)
+ok('the duplicates are reported, not hidden', clash.problems.some(x => x.includes('more than once')))
+ok('and the set that comes out is still unique', new Set(clash.labels).size === clash.labels.length)
+
+const bad = generateLabels({ mode: 'blocks', zMode: 'never', blocks: [{ zone: '', aisleFrom: 1, aisleTo: 2, columns: 1, shelves: 1 }] })
+ok('a block with no zone is skipped and said so', bad.labels.length === 0 && bad.problems.some(x => x.includes('no single-letter zone')))
+const backwards = generateLabels({ mode: 'blocks', zMode: 'never', blocks: [{ zone: 'A', aisleFrom: 5, aisleTo: 1, columns: 1, shelves: 1 }] })
+ok('a backwards aisle range is read as intended', backwards.labels.length === 5)
+ok('an empty block list makes nothing', generateLabels({ mode: 'blocks', zMode: 'never', blocks: [] }).labels.length === 0)
+const floors = generateLabels({ mode: 'blocks', zMode: 'always', blocks: [{ zone: 'A', aisleFrom: 1, aisleTo: 1, columns: 1, shelves: 2 }] })
+ok('floor level applies to blocks too', floors.labels.includes('A0101Z01'))
+
+/* ---------- choosing what to reprint ---------- */
+const stored = generateLabels({
+  mode: 'blocks',
+  zMode: 'never',
+  blocks: [
+    { zone: 'A', aisleFrom: 1, aisleTo: 2, columns: 2, shelves: 3 },
+    { zone: 'B', aisleFrom: 1, aisleTo: 1, columns: 1, shelves: 2 },
+  ],
+}).labels
+ok('all of it', pickCodes(stored, { mode: 'all' }).codes.length === stored.length)
+ok('by zone', pickCodes(stored, { mode: 'zones', zones: ['B'] }).codes.join(' ') === 'B0101A01 B0101B01')
+ok('no zones means all of them', pickCodes(stored, { mode: 'zones', zones: [] }).codes.length === stored.length)
+ok('a range is inclusive at both ends', pickCodes(stored, { mode: 'range', from: 'A0102A01', to: 'A0201A01' }).codes.length === 4)
+ok('a backwards range is read as intended', pickCodes(stored, { mode: 'range', from: 'A0201A01', to: 'A0102A01' }).codes.length === 4)
+ok('an open lower bound', pickCodes(stored, { mode: 'range', from: '', to: 'A0101C01' }).codes.length === 3)
+ok('an open upper bound', pickCodes(stored, { mode: 'range', from: 'B0101A01', to: '' }).codes.length === 2)
+// One damaged label, scanned straight into the box - the gun returns the zone
+// field, so the code is what follows the last space.
+const one = pickCodes(stored, { mode: 'list', codes: ['A     A0102B01'] })
+ok('a scanned label picks its own code', one.codes.join('') === 'A0102B01' && one.missing.length === 0)
+ok('typed lowercase works too', pickCodes(stored, { mode: 'list', codes: ['a0101c01'] }).codes.join('') === 'A0101C01')
+const some = pickCodes(stored, { mode: 'list', codes: ['A0201A01', 'A0101A01', 'A0101A01', 'M9999Z09', ''] })
+ok('a list comes back in rack order', some.codes.join(' ') === 'A0101A01 A0201A01')
+ok('repeats collapse', some.codes.length === 2)
+ok('a code the site does not have is reported, not printed', some.missing.join('') === 'M9999Z09')
+ok('blank lines are ignored', !some.codes.includes('') && !some.missing.includes(''))
 
 /* ---------- pair validation ---------- */
 const loc = { zone: 'A', aisle: 1, col: null }
