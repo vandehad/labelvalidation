@@ -324,7 +324,6 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   // Camera mode, for a phone with no scan gun. The camera is a third way to
   // get characters into the same two fields; nothing downstream can tell.
   const [cam, setCam] = useState(false)
-  const [camStep, setCamStep] = useState<'old' | 'new'>('old')
   const [camMsg, setCamMsg] = useState('')
   const videoRef = useRef<HTMLVideoElement>(null)
   const stopCam = useRef<StopCamera | null>(null)
@@ -464,25 +463,26 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       setOldBin('')
       setNewBin('')
       camOld.current = ''
-      setCamStep('old')
       setTyping(false)
       oldRef.current?.focus()
     }
   }
 
-  // What a decoded barcode does: the first read is the old bin, the second is
-  // the label hung on it and commits the pair. Held in a ref so the camera
-  // loop always calls the current version without being restarted.
+  // What a decoded barcode does: with the old field empty it is the old bin;
+  // otherwise it is the label hung on it and commits the pair. The old field
+  // counts however it was filled - camera, gun or typed - so a torn old
+  // label typed in still lets the camera read the new one. Held in a ref so
+  // the camera loop always calls the current version without a restart.
+  const camStep: 'old' | 'new' = camOld.current || oldBin.trim() ? 'new' : 'old'
   onCodeRef.current = (text: string) => {
-    if (!camOld.current) {
+    if (camStep === 'old') {
       camOld.current = text
       setOldBin(text)
       setNewBin('')
-      setCamStep('new')
       feedback(true)
       return
     }
-    const o = camOld.current
+    const o = camOld.current || oldBin
     setNewBin(text)
     void commit(o, text)
   }
@@ -728,8 +728,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
               setNewBin('')
               setResult(null)
               camOld.current = ''
-              setCamStep('old')
-              oldRef.current?.focus()
+                      oldRef.current?.focus()
             }}
           >
             Clear
