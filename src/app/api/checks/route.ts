@@ -33,7 +33,7 @@ export async function GET(req: Request) {
     const limit = Math.min(Number(searchParams.get('limit') ?? 200), 1000)
     const sql = db()
 
-    const [checks, tally, reference, byUser] = await Promise.all([
+    const [checks, tally, reference, byUser, dupes] = await Promise.all([
       sql`SELECT c.id, c.old_bin, c.new_bin, c.expected_bin, c.verdict, c.created_at, u.username
           FROM checks c LEFT JOIN users u ON u.id = c.user_id
           WHERE c.site_id = ${siteId} AND c.source = ${source}
@@ -47,6 +47,10 @@ export async function GET(req: Request) {
           FROM checks c LEFT JOIN users u ON u.id = c.user_id
           WHERE c.site_id = ${siteId} AND c.source = ${source}
           GROUP BY 1 ORDER BY n DESC`,
+      // One new label on two or more old bins, per the audit's own records.
+      sql`SELECT new_bin, array_agg(old_bin ORDER BY old_bin) AS old_bins
+          FROM checks WHERE site_id = ${siteId} AND source = ${source}
+          GROUP BY new_bin HAVING count(*) > 1 ORDER BY new_bin LIMIT 50`,
     ])
 
     const t = tally as Array<{ verdict: string; n: number }>
@@ -57,8 +61,9 @@ export async function GET(req: Request) {
       unmapped: n('unmapped'),
       checked: t.reduce((a, b) => a + b.n, 0),
       reference: (reference[0] as { n: number }).n,
+      duplicates: dupes.length,
     }
-    return json({ checks, counts, byUser, source })
+    return json({ checks, counts, byUser, source, duplicates: dupes })
   } catch (e) {
     return fail(e)
   }
@@ -118,7 +123,19 @@ export async function POST(req: Request) {
       RETURNING id, old_bin, new_bin, expected_bin, verdict, created_at
     `) as Array<Record<string, unknown>>
 
-    return json({ check: { ...rows[0], username: user.name }, verdict, expected, belongsTo }, 201)
+    // The same new label already recorded against a different old bin is two
+    // shelves sharing a code. The reference cannot show it when it holds
+    // neither bin - both scans come back "not paired yet" and look fine - so
+    // the audit's own records are the only place it appears. Still recorded:
+    // that is the finding somebody has to go and fix.
+    const dupRows = (await sql`
+      SELECT c.old_bin, c.created_at, u.username
+      FROM checks c LEFT JOIN users u ON u.id = c.user_id
+      WHERE c.site_id = ${siteId} AND c.source = ${source} AND c.new_bin = ${newBin} AND c.old_bin <> ${oldBin}
+      ORDER BY c.created_at DESC LIMIT 1`) as Array<{ old_bin: string; created_at: string; username: string | null }>
+    const duplicateOf = dupRows[0] ?? null
+
+    return json({ check: { ...rows[0], username: user.name }, verdict, expected, belongsTo, duplicateOf }, 201)
   } catch (e) {
     return fail(e)
   }

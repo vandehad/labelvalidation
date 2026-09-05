@@ -290,7 +290,7 @@ function MobileAdd({
 function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const [sites, setSites] = useState<Site[]>([])
   const [siteId, setSiteId] = useState<number | null>(null)
-  const [source, setSource] = useState<Source>('map')
+  const [source, setSource] = useState<Source>('pairs')
   const [setup, setSetup] = useState(false)
 
   const [oldBin, setOldBin] = useState('')
@@ -450,10 +450,23 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       const v = r.verdict as Verdict
       setLastId(r.check?.id ?? null)
       const also = r.belongsTo ? `${n} belongs to ${r.belongsTo}.` : undefined
-      if (v === 'match') setResult({ verdict: v, text: 'MATCH', sub: `${o}  →  ${n}` })
+      const dup = r.duplicateOf as { old_bin: string; username: string | null } | null
+      if (dup) {
+        // Two shelves with one code. Recorded like any other finding, but it
+        // is the loudest thing this page can say, because the reference
+        // cannot see it and the tally will not either.
+        const who = dup.username ? ` by ${dup.username}` : ''
+        setResult({
+          verdict: 'mismatch',
+          text: 'SAME LABEL ON 2 BINS',
+          sub: `${n} is already on ${dup.old_bin}${who}. Now also on ${o}. Recorded - one of the two is wrong, fix it before moving on.`,
+        })
+      } else if (v === 'match') setResult({ verdict: v, text: 'MATCH', sub: `${o}  →  ${n}` })
       else if (v === 'mismatch') setResult({ verdict: v, text: 'MISMATCH', sub: `${o} should be ${r.expected}, not ${n}. ${also ?? ''}`.trim() })
-      else setResult({ verdict: v, text: 'NOT IN REFERENCE', sub: `${o} is not in the reference. ${also ?? ''}`.trim() })
-      feedback(v === 'match')
+      else if (source === 'pairs')
+        setResult({ verdict: v, text: 'NOT PAIRED YET', sub: `${o} has not been scanned in as a pair, so nothing says what it should be. ${also ?? ''}`.trim() })
+      else setResult({ verdict: v, text: 'NOT IN BIN MAP', sub: `${o} is not in the uploaded bin map. ${also ?? ''}`.trim() })
+      feedback(v === 'match' && !dup)
       await refresh()
     } catch (e) {
       setResult({ verdict: 'error', text: 'FAILED', sub: e instanceof Error ? e.message : String(e) })
@@ -609,8 +622,8 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           </select>
           <label className="m-label">Check against</label>
           <select className="m-in" value={source} onChange={e => setSource(e.target.value as Source)}>
-            <option value="map">The uploaded bin map</option>
-            <option value="pairs">Bins scanned in on this site</option>
+            <option value="pairs">What has been scanned in on this site</option>
+            <option value="map">An uploaded bin map</option>
           </select>
           <label className="m-label">Printer for added bins</label>
           <select className="m-in" value={printer} onChange={e => setPrinter(e.target.value)}>
@@ -647,6 +660,14 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       {cam && !add && (
         <div className="m-cam">
           <video ref={videoRef} autoPlay muted playsInline />
+          {/* The verdict block above scrolls off the top while the phone is
+              held up to a shelf, so the answer is painted on the picture too. */}
+          {result && (
+            <div className={`m-cam-verdict ${result.verdict}`}>
+              <b>{result.text}</b>
+              {result.sub && <span>{result.sub}</span>}
+            </div>
+          )}
           <div className="m-cam-guide" />
           <div className="m-cam-hint">{camStep === 'old' ? 'Point at the OLD label' : 'Now the label hung on it'}</div>
         </div>
@@ -765,7 +786,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
         </div>
         <div className={counts.unmapped ? 'warn' : ''}>
           <b>{counts.unmapped.toLocaleString()}</b>
-          <span>not in ref</span>
+          <span>{source === 'pairs' ? 'not paired' : 'not in map'}</span>
         </div>
         <div>
           <b>{todo.toLocaleString()}</b>

@@ -119,8 +119,8 @@ function setupScreen(sites: Array<{ id: number; name: string }>, cur: Step | nul
 <div><select name="site" style="font-size:22px;width:96%">${opts || '<option value="">no sites</option>'}</select></div>
 <div class="lbl">CHECK AGAINST</div>
 <div><select name="source" style="font-size:22px;width:96%">
-<option value="map"${cur && cur.source === 'map' ? ' selected' : ''}>The uploaded bin map</option>
-<option value="pairs"${cur && cur.source === 'pairs' ? ' selected' : ''}>Bins scanned in on this site</option>
+<option value="pairs"${!cur || cur.source === 'pairs' ? ' selected' : ''}>What has been scanned in on this site</option>
+<option value="map"${cur && cur.source === 'map' ? ' selected' : ''}>An uploaded bin map</option>
 </select></div>
 <div style="padding:14px 8px"><input class="go" type="submit" value="Start scanning"></div>
 </form>
@@ -436,13 +436,22 @@ export async function POST(req: Request) {
         SET new_bin = EXCLUDED.new_bin, expected_bin = EXCLUDED.expected_bin,
             verdict = EXCLUDED.verdict, user_id = EXCLUDED.user_id, created_at = now()`
 
+    // The same new label already on a different old bin, per the audit's own
+    // records - the reference cannot show it when it holds neither.
+    const dupRows = (await sql`
+      SELECT old_bin FROM checks
+      WHERE site_id = ${st.site} AND source = ${st.source} AND new_bin = ${newBin} AND old_bin <> ${oldBin}
+      ORDER BY created_at DESC LIMIT 1`) as Array<{ old_bin: string }>
     const also = belongsTo ? ` ${newBin} belongs to ${belongsTo}.` : ''
-    const shown =
-      verdict === 'match'
+    const shown = dupRows[0]
+      ? { colour: '#a32020', head: 'SAME LABEL ON 2 BINS', sub: `${newBin} is already on ${dupRows[0].old_bin}, now also on ${oldBin}. Recorded - one of the two is wrong.` }
+      : verdict === 'match'
         ? { colour: '#1b7f4b', head: 'MATCH', sub: `${oldBin} -> ${newBin}` }
         : verdict === 'mismatch'
           ? { colour: '#a32020', head: 'MISMATCH', sub: `${oldBin} should be ${expected}, not ${newBin}.${also}` }
-          : { colour: '#8a6100', head: 'NOT IN REFERENCE', sub: `${oldBin} is not in the reference.${also}` }
+          : st.source === 'pairs'
+            ? { colour: '#8a6100', head: 'NOT PAIRED YET', sub: `${oldBin} has not been scanned in as a pair.${also}` }
+            : { colour: '#8a6100', head: 'NOT IN BIN MAP', sub: `${oldBin} is not in the uploaded bin map.${also}` }
 
     return oldScreen(st, shown, await tallyFor(st))
   }

@@ -1459,7 +1459,7 @@ function Reconcile({ siteId }: { siteId: number }) {
  * app's own work.
  */
 function Validate({ siteId, siteName, user }: { siteId: number; siteName: string; user: User }) {
-  const [source, setSource] = useState<Source>('map')
+  const [source, setSource] = useState<Source>('pairs')
   const [counts, setCounts] = useState({ match: 0, mismatch: 0, unmapped: 0, checked: 0, reference: 0 })
   const [checks, setChecks] = useState<Check[]>([])
   const [lastCheck, setLastCheck] = useState<{ id: number; old_bin: string } | null>(null)
@@ -1616,14 +1616,29 @@ function Validate({ siteId, siteName, user }: { siteId: number; siteName: string
       })
       const v = r.verdict as Verdict
       const also = r.belongsTo ? `${n} belongs to ${r.belongsTo} in the reference.` : undefined
-      if (v === 'match') {
+      const dup = r.duplicateOf as { old_bin: string; username: string | null } | null
+      if (dup) {
+        // Two shelves with one code - recorded, and the loudest thing here.
+        flash(
+          'bad',
+          `SAME LABEL ON TWO BINS — ${n} is already on ${dup.old_bin}${dup.username ? ` (${dup.username})` : ''}, now also on ${o}.`,
+          'Recorded. One of the two is wrong.',
+        )
+        beep(false)
+      } else if (v === 'match') {
         flash('ok', `MATCH — ${o} → ${n}`, also)
         beep(true)
       } else if (v === 'mismatch') {
         flash('bad', `MISMATCH — ${o} has ${n} hung, should be ${r.expected}`, also)
         beep(false)
       } else {
-        flash('warn', `${o} is not in the reference — nothing says what it should be.`, also)
+        flash(
+          'warn',
+          source === 'pairs'
+            ? `${o} has not been scanned in as a pair yet — nothing says what it should be.`
+            : `${o} is not in the uploaded bin map — nothing says what it should be.`,
+          also,
+        )
         beep(false)
       }
       setChecks(c => [r.check, ...c.filter(x => x.old_bin !== o)])
@@ -1909,7 +1924,7 @@ function Validate({ siteId, siteName, user }: { siteId: number; siteName: string
         <Stat n={counts.checked.toLocaleString()} l="bins audited" />
         <Stat n={counts.match.toLocaleString()} l="match" />
         <Stat n={counts.mismatch.toLocaleString()} l="MISMATCH" />
-        <Stat n={counts.unmapped.toLocaleString()} l="not in reference" />
+        <Stat n={counts.unmapped.toLocaleString()} l={source === 'pairs' ? 'not paired yet' : 'not in bin map'} />
         <Stat n={todo.toLocaleString()} l="left to check" />
         <Stat n={counts.checked > 0 && counts.mismatch + counts.unmapped === 0 ? 'CLEAN' : 'CHECK'} l="so far" />
       </div>
@@ -1946,7 +1961,7 @@ function Validate({ siteId, siteName, user }: { siteId: number; siteName: string
                   <td>{c.expected_bin ?? '—'}</td>
                   <td>
                     <span className={`pill ${c.verdict === 'match' ? 'ok' : c.verdict === 'mismatch' ? 'bad' : 'warn'}`}>
-                      {c.verdict === 'unmapped' ? 'NOT IN REFERENCE' : c.verdict.toUpperCase()}
+                      {c.verdict === 'unmapped' ? (source === 'pairs' ? 'NOT PAIRED YET' : 'NOT IN MAP') : c.verdict.toUpperCase()}
                     </span>
                   </td>
                   <td>{c.username ?? '—'}</td>
