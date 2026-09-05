@@ -177,9 +177,14 @@ idle. A job it fails on — printer off, cable out — is reported back with the
 reason and can be retried from the Print card. A relay that dies mid-job loses
 nothing: after three minutes the job goes back in the queue.
 
-There is an optional *ZPL sent before every job* box: `^XA^PW610^XZ` for a
-printer that forgets its width at power-on, say. It is per relay because it is
-about that printer.
+The relay is also told the **label stock in its printer**: 4 inch sends
+`^PW832` with every label, 3 inch sends `^PW609`. It is stamped into every
+label's `^XA` block — inside each label, not ahead of the job, because the
+site preamble's `^JUR` restores the saved configuration and would undo
+anything sent before it. That is what survived the ZQ630's power cycles, which
+reset its width every time and cannot be made not to. It is per relay because
+it is about that printer, and it applies to the direct path and the test label
+too.
 
 Day to day:
 

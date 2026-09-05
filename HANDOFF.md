@@ -221,6 +221,14 @@ variable, because a relay is set up by whoever is standing at that PC and the
 Admin tab is where they can read it from. The direct `localhost` path is kept
 as an option on the Print card for a laptop sitting beside the printer.
 
+The relay has one printer-specific setting: the label stock, 4 inch or 3
+inch, which it forces into every `^XA` block as `^PW832` or `^PW609`. The ZQ630 resets `ezpl.print_width` to 832 at
+every boot, `media.width_sense` is locked off, ZBI is disabled, and `^JUS`,
+SGD setvar and the Zebra config tool all failed to make a width stick - so
+`^PW` in every label is the fix, and it is the relay's job because it is
+about that printer, not about the labels. Inside each label rather than ahead
+of the job, because the site preamble's `^JUR` would restore the saved 832.
+
 **Zone blocks, not one uniform shape.** A warehouse divides into stretches of
 aisles - 1-26 zone A at 24 columns of 10 shelves, 27-36 zone B at 18 of 8 - and
 the next site divides differently. `GenSpec` has a `blocks` mode taking one
