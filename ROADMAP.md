@@ -82,27 +82,61 @@ A shelf turns up with no old label - an unassigned, zero-inventory bin. It
 needs a new code, a printed label, and someone to come back and hang it.
 
 **The data model matters more than the screen here.** A minted bin has no old
-counterpart and never will, so it must not look like an unpaired label at
-reconcile time. Today reconcile would list it under *unused - delete these*,
-which is precisely backwards: it is a bin being **added**, not one being
-removed.
+counterpart, so left alone it looks exactly like a label nobody paired - and
+reconcile would list it under *unused, delete these*. That is precisely
+backwards: it is a bin being **added**, and deleting it at the end of the
+conversion is how a freshly hung shelf becomes a bin the WMS cannot find.
+
+**It gets a placeholder old bin and stays in `pairs`.** A row with a partner
+is not an orphan, so every existing rule keeps working unchanged: the unique
+constraints still guarantee one-for-one, reconcile still sees a paired label,
+and the export still carries it. No second state machine.
+
+```
+old_bin              new_bin
+NEW-000117           M0501B01
+```
+
+Three things make it safe rather than a magic string:
+
+- **A column, not a prefix.** `pairs.origin` (`scanned` | `minted`) is what
+  every query branches on. Nothing should parse `NEW-` out of `old_bin` to
+  decide what a row means - that is the kind of convention someone breaks by
+  typing it into a scan field, and then a real pairing is treated as minted.
+  The placeholder is for a human reading the sheet; the column is for code.
+- **A Postgres sequence for the number.** With twenty people minting, a
+  `SELECT max(...) + 1` races and hands two shelves the same placeholder.
+  `nextval` cannot.
+- **A shape that cannot collide.** `NEW-000117` matches neither `parseOld`
+  nor `NEW_PATTERN`, so it can never be mistaken for a real old bin, and
+  `reversedScan` will not trip over it.
 
 ```sql
-ALTER TABLE labels ADD COLUMN origin     text        NOT NULL DEFAULT 'generated';
-                                                     -- generated | minted
+CREATE SEQUENCE IF NOT EXISTS minted_bin_seq;
+ALTER TABLE pairs  ADD COLUMN origin     text NOT NULL DEFAULT 'scanned';
+                                          -- scanned | minted
+ALTER TABLE labels ADD COLUMN origin     text NOT NULL DEFAULT 'generated';
+                                          -- generated | minted
 ALTER TABLE labels ADD COLUMN printed_at timestamptz;
 ALTER TABLE labels ADD COLUMN hung_at    timestamptz;
 ALTER TABLE labels ADD COLUMN minted_by  integer REFERENCES users(id);
 ```
 
+**In the export**, minted rows sort to the bottom of `CROSS REFERENCE` and
+also get their own `NEW BINS` sheet. Both, deliberately: the cross-reference
+is the complete picture, and the separate sheet is what someone hands the WMS
+team, because a rename instruction whose *from* side does not exist is not a
+rename - it is a bin to create. Those are different jobs and they should not
+arrive mixed together.
+
 Reconcile then reads:
 
-| label state | meaning |
+| state | meaning |
 | --- | --- |
 | generated, no pair | printed too many - delete from the WMS |
-| minted, no pair, not hung | waiting for someone to hang it |
+| minted, not hung | waiting for someone to hang it |
 | minted, hung, no pair | hung, needs pairing |
-| any, paired | done |
+| any, paired | done - including minted, which must **not** be deleted |
 
 **The code is chosen, never typed.** Zone, aisle, column, shelf letter and
 position each come from a picker driven by the site's own zone blocks - so
