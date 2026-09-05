@@ -20,6 +20,9 @@ import type { RelaySeen } from '@/lib/printq'
  *     missed, and a missed mismatch is a wrong label left hanging.
  *   - Focus returns to the old-bin field after every scan, so the gun always
  *     lands somewhere useful without anyone tapping the screen with gloves on.
+ *   - A label the gun cannot read can still be typed: double-tap the field,
+ *     or "Type it", brings the keyboard up for that one entry. It goes away
+ *     again once the pair commits, so the gun stays the default.
  *   - A shelf with no old label can be added from the aisle. The picker is
  *     native selects - a spinner under a thumb - and the code is built from
  *     the picks, so it cannot come out malformed. See `MobileAdd`.
@@ -297,6 +300,17 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const [result, setResult] = useState<{ verdict: Verdict | 'error'; text: string; sub?: string } | null>(null)
   const [counts, setCounts] = useState({ match: 0, mismatch: 0, unmapped: 0, checked: 0, reference: 0 })
   const [add, setAdd] = useState(false) // the add-a-bin picker is showing instead of the scan fields
+  // Keyboard mode, for a label too damaged to scan. inputMode flips to text
+  // and the field is refocused inside the tap, which is what makes Android
+  // raise the keyboard. Off again after the pair commits.
+  const [typing, setTyping] = useState(false)
+  const typeInto = (ref: React.RefObject<HTMLInputElement | null>) => {
+    setTyping(true)
+    setTimeout(() => {
+      ref.current?.blur()
+      ref.current?.focus()
+    }, 0)
+  }
   // Which relay prints an added bin's label: '' is any relay signed in to
   // the site. Printing goes through the app's queue - this device cannot
   // reach the PC with the printer, but that PC can reach the app.
@@ -451,6 +465,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       setNewBin('')
       camOld.current = ''
       setCamStep('old')
+      setTyping(false)
       oldRef.current?.focus()
     }
   }
@@ -654,9 +669,11 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           value={oldBin}
           onChange={e => setOldBin(e.target.value)}
           onKeyDown={e => key(e, 'old')}
+          onDoubleClick={() => typeInto(oldRef)}
           // inputMode none: DataWedge types the scan in as keystrokes, but
           // Android must not raise the on-screen keyboard over the screen.
-          inputMode="none"
+          // Unless asked to - see typeInto.
+          inputMode={typing ? 'text' : 'none'}
           autoComplete="off"
           autoCapitalize="characters"
           spellCheck={false}
@@ -670,7 +687,8 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           value={newBin}
           onChange={e => setNewBin(e.target.value)}
           onKeyDown={e => key(e, 'new')}
-          inputMode="none"
+          onDoubleClick={() => typeInto(newRef)}
+          inputMode={typing ? 'text' : 'none'}
           autoComplete="off"
           autoCapitalize="characters"
           spellCheck={false}
@@ -680,6 +698,12 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
         <div className="m-row">
           <button className="m-btn ghost" onClick={undo} disabled={busy || !lastId}>
             Undo last
+          </button>
+          <button
+            className={`m-btn ${typing ? '' : 'ghost'}`}
+            onClick={() => (typing ? setTyping(false) : typeInto(oldBin.trim() ? newRef : oldRef))}
+          >
+            {typing ? 'Keyboard off' : 'Type it'}
           </button>
           <button
             className="m-btn ghost"

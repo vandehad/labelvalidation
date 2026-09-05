@@ -241,6 +241,9 @@ the constraints are different:
   missed, and a missed mismatch is a wrong label left on the rack.
 - **Focus returns to the old-bin field after every scan**, so the gun always
   lands somewhere useful without tapping the screen with gloves on.
+- **A label the gun cannot read can be typed.** Double-tap the field, or
+  **Type it**, brings the keyboard up for that one entry; it goes away again
+  once the pair commits, so the gun stays the default.
 - Buttons are 52px, and the tally sits along the bottom: checked, mismatch,
   not-in-reference, to go.
 
