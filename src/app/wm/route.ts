@@ -1,6 +1,7 @@
 import { db } from '@/lib/db'
 import { currentUser, findUser, verifyPassword, sessionFor, setSessionCookie } from '@/lib/auth'
-import { verdictFor, normalizeScan, reversedScan } from '@/lib/bins'
+import { verdictFor, normalizeScan, reversedScan, newCode, displayCode } from '@/lib/bins'
+import { mintOptions, mintBin, checkPick, MintRefused } from '@/lib/mint'
 import { cookies } from 'next/headers'
 
 export const dynamic = 'force-dynamic'
@@ -134,7 +135,10 @@ ${banner}
 <div><input class="scan" type="text" name="old"></div>
 <div style="padding:12px 8px"><input class="go" type="submit" value="Next"></div>
 </form>
-<div class="foot"><a href="/wm?do=setup">Change site</a> &nbsp;|&nbsp; site ${st.site}, ${st.source}</div>`,
+<div class="foot">
+<a href="/wm?do=add">Add a bin</a> &nbsp;|&nbsp;
+<a href="/wm?do=setup">Change site</a> &nbsp;|&nbsp; site ${st.site}, ${st.source}
+</div>`,
   )
 }
 
@@ -154,6 +158,97 @@ ${err ? `<table><tr><td bgcolor="#a32020"><font color="#ffffff"><b>${esc(err)}</
 &nbsp;<a href="/wm">start over</a>
 </div>
 </form>`,
+  )
+}
+
+/**
+ * Adding a bin, one choice per page.
+ *
+ * The cascade needs a round trip per level because there is no JavaScript to
+ * repopulate a select - which suits this device anyway: a list, a tap, next.
+ * The options come from the site's own labels, so a minted bin cannot land in
+ * a zone or aisle the warehouse does not have.
+ */
+function addScreen(
+  opts: Awaited<ReturnType<typeof mintOptions>>,
+  chosen: { zone?: string; aisle?: number; col?: number },
+  err = '',
+) {
+  const hidden =
+    (chosen.zone ? `<input type="hidden" name="zone" value="${esc(chosen.zone)}">` : '') +
+    (chosen.aisle !== undefined ? `<input type="hidden" name="aisle" value="${chosen.aisle}">` : '') +
+    (chosen.col !== undefined ? `<input type="hidden" name="col" value="${chosen.col}">` : '')
+
+  const where = [chosen.zone, chosen.aisle, chosen.col].filter(x => x !== undefined).join(' - ')
+  const head = `${bar('add a bin')}
+${err ? `<table><tr><td bgcolor="#a32020"><font color="#ffffff"><b>${esc(err)}</b></font></td></tr></table>` : ''}
+${where ? `<table><tr><td bgcolor="#e6f5ec"><b>${esc(where)}</b></td></tr></table>` : ''}`
+
+  const shell = (label: string, field: string, next: string, submit = 'Next') => `${head}
+<form method="get" action="/wm">
+<input type="hidden" name="do" value="${next}">
+${hidden}
+<div class="lbl">${label}</div>
+<div>${field}</div>
+<div style="padding:14px 8px">
+<input class="go" type="submit" value="${submit}">
+&nbsp;<a href="/wm">cancel</a>
+</div>
+</form>`
+
+  const sel = (name: string, items: Array<string | number>) =>
+    `<select name="${name}" style="font-size:26px;width:96%">${items
+      .map(i => `<option value="${esc(i)}">${esc(i)}</option>`)
+      .join('')}</select>`
+
+  if (opts.level === 'zone')
+    return page('Add a bin - zone', shell('ZONE', sel('zone', opts.zones), 'add'))
+  if (opts.level === 'aisle')
+    return page('Add a bin - aisle', shell('AISLE', sel('aisle', opts.aisles), 'add'))
+  if (opts.level === 'col')
+    return page('Add a bin - column', shell('COLUMN', sel('col', opts.columns), 'add'))
+
+  // Shelf letters already in this column are offered as taken rather than left
+  // to collide - the insert would refuse them, but after a walk to the rack.
+  const free: string[] = []
+  const used: string[] = []
+  for (let i = 0; i < 26; i++) {
+    const L = String.fromCharCode(65 + i)
+    const code = newCode(chosen.zone!, chosen.aisle!, chosen.col!, L, 1)
+    ;(opts.taken.includes(code) ? used : free).push(L)
+  }
+  return page(
+    'Add a bin - shelf',
+    `${head}
+<form method="post" action="/wm">
+<input type="hidden" name="do" value="mint">
+${hidden}
+<div class="lbl">SHELF &nbsp; &mdash; ${used.length ? `${esc(used.join(' '))} already exist` : 'none used yet'}</div>
+<div><select name="letter" style="font-size:26px;width:96%">${free
+      .map(L => `<option value="${L}">${L}</option>`)
+      .join('')}</select></div>
+<div class="lbl">POSITION</div>
+<div><input class="txt" type="text" name="position" value="1" size="3"></div>
+<div style="padding:14px 8px">
+<input class="go" type="submit" value="Add this bin">
+&nbsp;<a href="/wm">cancel</a>
+</div>
+</form>`,
+  )
+}
+
+function addedScreen(code: string, oldBin: string, tally: string) {
+  return page(
+    'Bin added',
+    `${bar(tally)}
+<table><tr><td bgcolor="#1b7f4b"><font color="#ffffff">
+<div class="big">ADDED</div>
+<div class="sub">${esc(displayCode(code))} &nbsp; as &nbsp; ${esc(oldBin)}<br>Print it, then hang it.</div>
+</font></td></tr></table>
+<div style="padding:14px 8px">
+<a class="go" href="/wm" style="font-size:22px">Back to scanning</a>
+&nbsp;&nbsp;<a href="/wm?do=add">add another</a>
+</div>`,
   )
 }
 
@@ -192,6 +287,19 @@ export async function GET(req: Request) {
   }
 
   const st = await readStep()
+
+  if (q.get('do') === 'add' && st) {
+    const zone = (q.get('zone') ?? '').toUpperCase()
+    const aisle = q.get('aisle') === null ? null : Number(q.get('aisle'))
+    const col = q.get('col') === null ? null : Number(q.get('col'))
+    const opts = await mintOptions(db(), st.site, zone, aisle, col)
+    return addScreen(opts, {
+      zone: zone || undefined,
+      aisle: aisle === null ? undefined : aisle,
+      col: col === null ? undefined : col,
+    })
+  }
+
   if (q.get('do') === 'setup' || !st) {
     const sql = db()
     const sites = (await sql`SELECT id, name FROM sites ORDER BY created_at DESC`) as Array<{
@@ -230,6 +338,23 @@ export async function POST(req: Request) {
 
   const st = await readStep()
   if (!st) return Response.redirect(new URL('/wm?do=setup', req.url), 303)
+
+  if (doing === 'mint') {
+    const chosen = {
+      zone: String(form.get('zone') ?? '').toUpperCase(),
+      aisle: Number(form.get('aisle')),
+      col: Number(form.get('col')),
+    }
+    try {
+      const pick = checkPick({ ...chosen, letter: String(form.get('letter') ?? ''), position: Number(form.get('position') ?? 1) })
+      const made = await mintBin(db(), st.site, user.uid, pick)
+      return addedScreen(made.code, made.oldBin, await tallyFor(st))
+    } catch (e) {
+      const why = e instanceof MintRefused ? e.message : e instanceof Error ? e.message : String(e)
+      const opts = await mintOptions(db(), st.site, chosen.zone, chosen.aisle, chosen.col)
+      return addScreen(opts, chosen, why)
+    }
+  }
 
   // Step one: the old label. One field, so Enter from the wedge lands here.
   if (doing === 'old') {
