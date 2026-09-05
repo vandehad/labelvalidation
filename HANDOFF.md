@@ -242,6 +242,16 @@ Keep it dynamic: a static import would hand every TC52 a 450 KB decoder it will
 never run. Nobody has asked for this yet; it is there because it was cheap and
 a foreman with a phone is a plausible Tuesday.
 
+**Add-a-bin is on all three screens, and the handheld does not print.** The
+desktop card, `/scan` and `/wm` all go through `src/lib/mint.ts`, so they
+cannot disagree about what a valid new bin is. The handheld records the bin
+and hands printing to the desktop, deliberately: the relay binds to
+`127.0.0.1`, and even if it bound to the LAN, Chrome refuses an https page
+calling `http://192.168.x.x` — `Access-Control-Allow-Private-Network` only
+rescues `localhost`. So the Labels tab has an "Added on the floor" pick that
+lists every minted bin on the site, and the person at the printer prints
+them in one go. `/api/labels` returns `origin` for that; nothing else reads it.
+
 **Superset then reconcile.** Print more labels than needed, scan what is real,
 then delete the leftovers. The alternative — print exactly what the old data
 implies — is what failed at site 18.

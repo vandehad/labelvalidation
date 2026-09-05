@@ -132,6 +132,14 @@ select.site{font-weight:700}
 .m-verdict.unmapped{background:var(--warn);color:#fff}
 .m-verdict.error{background:var(--badbg);color:var(--bad);border:2px solid var(--bad)}
 
+/* Add a bin from the aisle: native selects, sized for a thumb, and the code
+   they assemble shown large enough to check against the shelf. */
+.m-add select.m-in{font-size:20px;font-weight:700;font-family:ui-monospace,Consolas,monospace}
+.m-add .m-row > div{min-width:0}
+.m-code{margin:12px 0 4px;padding:14px;text-align:center;font:800 28px/1.2 ui-monospace,Consolas,monospace;
+  letter-spacing:2px;border:2px dashed var(--line);border-radius:10px;color:var(--ink)}
+.m-code.clash{border-color:#b3261e;color:#b3261e}
+
 /* Camera mode on a phone. The guide box is where to put the label; the hint
    says which of the two scans is next. */
 .m-cam{position:relative;background:#000}

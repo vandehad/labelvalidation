@@ -835,11 +835,12 @@ function Print({ siteId }: { siteId: number }) {
   const [darkness, setDarkness] = useState('0')
   const [speed, setSpeed] = useState('4')
   const [zoneSel, setZoneSel] = useState<string[]>([])
-  const [pickMode, setPickMode] = useState<Pick['mode']>('all')
+  const [pickMode, setPickMode] = useState<Pick['mode'] | 'minted'>('all')
   const [rangeFrom, setRangeFrom] = useState('')
   const [rangeTo, setRangeTo] = useState('')
   const [list, setList] = useState('')
   const [codes, setCodes] = useState<string[] | null>(null)
+  const [minted, setMinted] = useState<string[]>([]) // added on the floor, so printed after the fact
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
 
@@ -865,7 +866,9 @@ function Print({ siteId }: { siteId: number }) {
   const load = useCallback(async () => {
     try {
       const d = await api(`/api/labels?site=${siteId}`)
-      setCodes((d.labels as Array<{ code: string }>).map(l => l.code))
+      const rows = d.labels as Array<{ code: string; origin?: string }>
+      setCodes(rows.map(l => l.code))
+      setMinted(rows.filter(l => l.origin === 'minted').map(l => l.code))
     } catch (e) {
       setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
     }
@@ -888,8 +891,13 @@ function Print({ siteId }: { siteId: number }) {
   // Reprints come out of what is stored, never out of the generator again: a
   // replacement has to be identical to the label it replaces, and a code the
   // site has never heard of must not reach the printer at all.
+  // A bin added from the aisle is a stored label like any other; this is just
+  // the list of them, so the person at the printer does not have to ask who
+  // added what.
   const pick: Pick =
-    pickMode === 'zones'
+    pickMode === 'minted'
+      ? { mode: 'list', codes: minted }
+      : pickMode === 'zones'
       ? { mode: 'zones', zones: zoneSel }
       : pickMode === 'range'
         ? { mode: 'range', from: rangeFrom, to: rangeTo }
@@ -1012,11 +1020,12 @@ function Print({ siteId }: { siteId: number }) {
       <div className="row" style={{ marginTop: 4 }}>
         <div style={{ flex: '1 1 260px' }}>
           <label>What to print</label>
-          <select value={pickMode} onChange={e => setPickMode(e.target.value as Pick['mode'])}>
+          <select value={pickMode} onChange={e => setPickMode(e.target.value as Pick['mode'] | 'minted')}>
             <option value="all">Every label stored for this site</option>
             <option value="zones">Whole zones</option>
             <option value="range">A range, from one code to another</option>
             <option value="list">Just these — one code per line, or scan them</option>
+            <option value="minted">Added on the floor — bins minted from a handheld or here, to print and hang</option>
           </select>
         </div>
       </div>
@@ -1112,7 +1121,9 @@ function Print({ siteId }: { siteId: number }) {
               ? 'No stored code falls between those two. Leave an end blank for an open bound.'
               : pickMode === 'list'
                 ? "None of those codes are in this site's label set."
-                : ''}
+                : pickMode === 'minted'
+                  ? 'No bins have been added on the floor for this site.'
+                  : ''}
         </div>
       )}
 
@@ -2337,7 +2348,7 @@ function AddBin({ siteId, onAdded }: { siteId: number; onAdded: () => void }) {
       {made && (
         <p className="hint" style={{ marginTop: 10 }}>
           Last added <code>{made.code}</code> as <code>{made.oldBin}</code>. Print it from the Labels tab —
-          <em> Just these</em> — then hang it and pair it like any other bin.
+          <em> Added on the floor</em> — then hang it and pair it like any other bin.
         </p>
       )}
     </div>

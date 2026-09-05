@@ -229,6 +229,20 @@ wrong-way-round gate applies.
 - It needs HTTPS. `getUserMedia` refuses on plain http, so `npm run dev` on a
   phone will say the camera could not be opened; the Vercel deployment is fine.
 
+### Adding a bin from the aisle
+
+**Add a bin** on `/scan` is for a shelf that never had an old label. It is the
+same picker as the desktop card and the Windows Mobile page — zone, aisle,
+column, shelf, position, each offered from the site's own label set, so the
+code is assembled rather than typed — on native selects, which Android shows
+as a spinner. The bin is recorded with a placeholder old bin (`NEW-000117`)
+so reconcile keeps it, and the page goes straight back to scanning.
+
+It does not print. The relay only listens on the desktop's own loopback, and a
+browser will not let an https page call an http address on the LAN in any
+case. The label comes off the desktop: Labels → *What to print* → **Added on
+the floor**, which lists every minted bin on the site.
+
 ## Auditing labels that are already hung
 
 Use the **Validate** tab when the labels exist and the question is whether they

@@ -14,7 +14,7 @@ export async function GET(req: Request) {
     if (!siteId) return json({ error: 'site is required' }, 400)
     const sql = db()
     const rows = await sql`
-      SELECT code, zone, aisle, col, letter FROM labels
+      SELECT code, zone, aisle, col, letter, origin FROM labels
       WHERE site_id = ${siteId} ORDER BY code`
     return json({ labels: rows })
   } catch (e) {

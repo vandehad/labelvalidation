@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { normalizeScan, reversedScan, type Verdict } from '@/lib/bins'
+import { displayCode, newCode, normalizeScan, reversedScan, type Verdict } from '@/lib/bins'
 import { startCamera, cameraAvailable, type StopCamera } from '@/lib/camera'
 
 /**
@@ -19,6 +19,9 @@ import { startCamera, cameraAvailable, type StopCamera } from '@/lib/camera'
  *     missed, and a missed mismatch is a wrong label left hanging.
  *   - Focus returns to the old-bin field after every scan, so the gun always
  *     lands somewhere useful without anyone tapping the screen with gloves on.
+ *   - A shelf with no old label can be added from the aisle. The picker is
+ *     native selects - a spinner under a thumb - and the code is built from
+ *     the picks, so it cannot come out malformed. See `MobileAdd`.
  */
 
 type User = { name: string; role: string }
@@ -81,6 +84,206 @@ function MobileLogin({ onIn }: { onIn: (u: User) => void }) {
 
 /* ------------------------------------------------------------------ */
 
+/**
+ * Adding a bin from the aisle - a shelf that never had an old label.
+ *
+ * Same rules as the desktop card and the Windows Mobile page, because all
+ * three go through `src/lib/mint.ts`: the code is assembled from picks the
+ * site's own label set offers, never typed, and the placeholder old bin comes
+ * from a sequence so the row survives reconcile. The picks are native selects,
+ * which Android renders as a spinner a gloved thumb can drive.
+ *
+ * It records the bin; it does not print it. The relay listens only on the
+ * desktop's own loopback, and a browser will not let an https page call an
+ * http address on the LAN in any case. The label comes off the desktop:
+ * Labels, "Added on the floor".
+ */
+function MobileAdd({
+  siteId,
+  onAdded,
+  onClose,
+}: {
+  siteId: number
+  onAdded: (code: string, oldBin: string) => void
+  onClose: () => void
+}) {
+  const [zones, setZones] = useState<string[] | null>(null)
+  const [aisles, setAisles] = useState<number[]>([])
+  const [columns, setColumns] = useState<number[]>([])
+  const [taken, setTaken] = useState<string[]>([])
+
+  const [zone, setZone] = useState('')
+  const [aisle, setAisle] = useState<number | ''>('')
+  const [col, setCol] = useState<number | ''>('')
+  const [letter, setLetter] = useState('')
+  const [position, setPosition] = useState(1)
+
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  const step = useCallback(
+    async (q: string) => {
+      try {
+        return await api(`/api/mint?site=${siteId}${q}`)
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e))
+        return null
+      }
+    },
+    [siteId],
+  )
+
+  useEffect(() => {
+    void (async () => {
+      const d = await step('')
+      if (d) setZones(d.zones)
+    })()
+  }, [step])
+
+  const pickZone = async (z: string) => {
+    setZone(z)
+    setAisle('')
+    setCol('')
+    setLetter('')
+    setAisles([])
+    setColumns([])
+    setTaken([])
+    if (!z) return
+    const d = await step(`&zone=${z}`)
+    if (d) setAisles(d.aisles)
+  }
+  const pickAisle = async (a: number | '') => {
+    setAisle(a)
+    setCol('')
+    setLetter('')
+    setColumns([])
+    setTaken([])
+    if (a === '') return
+    const d = await step(`&zone=${zone}&aisle=${a}`)
+    if (d) setColumns(d.columns)
+  }
+  const pickCol = async (c: number | '') => {
+    setCol(c)
+    setLetter('')
+    setTaken([])
+    if (c === '') return
+    const d = await step(`&zone=${zone}&aisle=${aisle}&col=${c}`)
+    if (d) setTaken(d.taken)
+  }
+
+  const code =
+    zone && aisle !== '' && col !== '' && letter ? newCode(zone, Number(aisle), Number(col), letter, position) : ''
+  const clash = !!code && taken.includes(code)
+
+  const addBin = async () => {
+    setBusy(true)
+    setErr('')
+    try {
+      const r = await api('/api/mint', {
+        method: 'POST',
+        body: JSON.stringify({ siteId, zone, aisle, col, letter, position }),
+      })
+      setTaken(t => [...t, r.code])
+      setLetter('') // the next shelf on this column is the likely next add
+      onAdded(r.code, r.oldBin)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const LETTERS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i))
+  const num = (v: string): number | '' => (v === '' ? '' : Number(v))
+
+  return (
+    <div className="m-pad m-add">
+      {err && (
+        <div className="m-verdict error" style={{ minHeight: 0 }}>
+          <span className="m-sub">{err}</span>
+        </div>
+      )}
+      {zones && !zones.length && !err && (
+        <div className="m-verdict unmapped" style={{ minHeight: 0 }}>
+          <span className="m-sub">This site has no labels yet, so there is nowhere to add a bin. Generate the label set on the desktop first.</span>
+        </div>
+      )}
+
+      <label className="m-label">Zone</label>
+      <select className="m-in" value={zone} onChange={e => pickZone(e.target.value)} disabled={!zones?.length}>
+        <option value="">{zones ? '—' : 'loading…'}</option>
+        {(zones ?? []).map(z => (
+          <option key={z} value={z}>
+            {z}
+          </option>
+        ))}
+      </select>
+
+      <label className="m-label">Aisle</label>
+      <select className="m-in" value={aisle} onChange={e => pickAisle(num(e.target.value))} disabled={!zone}>
+        <option value="">—</option>
+        {aisles.map(a => (
+          <option key={a} value={a}>
+            {a}
+          </option>
+        ))}
+      </select>
+
+      <label className="m-label">Column</label>
+      <select className="m-in" value={col} onChange={e => pickCol(num(e.target.value))} disabled={aisle === ''}>
+        <option value="">—</option>
+        {columns.map(c => (
+          <option key={c} value={c}>
+            {c}
+          </option>
+        ))}
+      </select>
+
+      <div className="m-row">
+        <div style={{ flex: 2 }}>
+          <label className="m-label">Shelf</label>
+          <select className="m-in" value={letter} onChange={e => setLetter(e.target.value)} disabled={col === ''}>
+            <option value="">—</option>
+            {LETTERS.map(L => {
+              const used = taken.includes(newCode(zone || 'A', Number(aisle) || 0, Number(col) || 0, L, position))
+              return (
+                <option key={L} value={L} disabled={used}>
+                  {L}
+                  {used ? ' — taken' : ''}
+                </option>
+              )
+            })}
+          </select>
+        </div>
+        <div style={{ flex: 1 }}>
+          <label className="m-label">Position</label>
+          <select className="m-in" value={position} onChange={e => setPosition(Number(e.target.value))} disabled={col === ''}>
+            {Array.from({ length: 99 }, (_, i) => i + 1).map(p => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className={`m-code ${clash ? 'clash' : ''}`}>{code ? displayCode(code) : '— pick a shelf —'}</div>
+      {clash && <div className="m-sub">Already in the label set. Print and hang that one instead.</div>}
+
+      <div className="m-row">
+        <button className="m-btn" onClick={addBin} disabled={busy || !code || clash}>
+          {busy ? 'Adding…' : 'Add this bin'}
+        </button>
+        <button className="m-btn ghost" onClick={onClose}>
+          Back to scanning
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+
 function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const [sites, setSites] = useState<Site[]>([])
   const [siteId, setSiteId] = useState<number | null>(null)
@@ -93,6 +296,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const [lastId, setLastId] = useState<number | null>(null)
   const [result, setResult] = useState<{ verdict: Verdict | 'error'; text: string; sub?: string } | null>(null)
   const [counts, setCounts] = useState({ match: 0, mismatch: 0, unmapped: 0, checked: 0, reference: 0 })
+  const [add, setAdd] = useState(false) // the add-a-bin picker is showing instead of the scan fields
 
   const oldRef = useRef<HTMLInputElement>(null)
   const newRef = useRef<HTMLInputElement>(null)
@@ -300,7 +504,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   return (
     <div className="m-wrap">
       <div className="m-bar">
-        <b>VALIDATE</b>
+        <b>{add ? 'ADD A BIN' : 'VALIDATE'}</b>
         <span className="m-site">{site?.name ?? 'no site'}</span>
         <button className="m-gear" onClick={() => setSetup(v => !v)} aria-label="Settings">
           ⚙
@@ -345,7 +549,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
         <span className="m-sub">{result?.sub ?? 'Scan the old label, then the one hung on it.'}</span>
       </div>
 
-      {cam && (
+      {cam && !add && (
         <div className="m-cam">
           <video ref={videoRef} autoPlay muted playsInline />
           <div className="m-cam-guide" />
@@ -354,6 +558,24 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       )}
       {camMsg && <div className="m-verdict error" style={{ minHeight: 0 }}><span className="m-sub">{camMsg}</span></div>}
 
+      {add && siteId ? (
+        <MobileAdd
+          siteId={siteId}
+          onAdded={(code, oldBin) => {
+            setResult({
+              verdict: 'match',
+              text: 'ADDED',
+              sub: `${displayCode(code)} is recorded as ${oldBin}. Print it from the desktop - Labels, "Added on the floor" - then hang it.`,
+            })
+            feedback(true)
+            void refresh()
+          }}
+          onClose={() => {
+            setAdd(false)
+            setTimeout(() => oldRef.current?.focus(), 0)
+          }}
+        />
+      ) : (
       <div className="m-pad">
         <label className="m-label">1 · Old bin</label>
         <input
@@ -402,13 +624,26 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           >
             Clear
           </button>
+        </div>
+        <div className="m-row">
           {cameraAvailable() && (
             <button className={`m-btn ${cam ? '' : 'ghost'}`} onClick={() => setCam(v => !v)}>
               {cam ? 'Stop camera' : 'Camera'}
             </button>
           )}
+          <button
+            className="m-btn ghost"
+            disabled={!siteId}
+            onClick={() => {
+              setCam(false)
+              setAdd(true)
+            }}
+          >
+            Add a bin
+          </button>
         </div>
       </div>
+      )}
 
       <div className="m-tally">
         <div>
