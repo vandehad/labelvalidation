@@ -24,11 +24,18 @@ export async function GET(req: Request) {
     if (!site.length) return json({ error: 'No such site.' }, 404)
 
     const [pairs, unused, unexpected, binMap, checks] = (await Promise.all([
-      sql`SELECT p.old_bin, p.new_bin, p.location, u.username, p.created_at
-          FROM pairs p LEFT JOIN users u ON u.id = p.user_id
-          WHERE p.site_id = ${siteId} ORDER BY p.new_bin`,
+      // Minted bins sort last: a rename whose "from" side does not exist is
+      // not a rename, and mixing the two makes the sheet harder to act on.
+      sql`SELECT p.old_bin, p.new_bin, p.location, p.origin, u.username, p.created_at,
+                 l.hung_at, l.printed_at
+          FROM pairs p
+          LEFT JOIN users u  ON u.id = p.user_id
+          LEFT JOIN labels l ON l.site_id = p.site_id AND l.code = p.new_bin
+          WHERE p.site_id = ${siteId}
+          ORDER BY (p.origin = 'minted'), p.new_bin`,
       sql`SELECT l.code, l.zone, l.aisle, l.col, l.letter FROM labels l
           WHERE l.site_id = ${siteId}
+            AND l.origin <> 'minted'
             AND NOT EXISTS (SELECT 1 FROM pairs p WHERE p.site_id = l.site_id AND p.new_bin = l.code)
           ORDER BY l.code`,
       sql`SELECT p.new_bin, p.old_bin, u.username FROM pairs p
@@ -43,7 +50,16 @@ export async function GET(req: Request) {
           WHERE c.site_id = ${siteId}
           ORDER BY c.verdict, c.old_bin`,
     ])) as [
-      Array<{ old_bin: string; new_bin: string; location: string | null; username: string | null; created_at: string }>,
+      Array<{
+        old_bin: string
+        new_bin: string
+        location: string | null
+        origin: string
+        username: string | null
+        created_at: string
+        hung_at: string | null
+        printed_at: string | null
+      }>,
       Array<{ code: string; zone: string; aisle: number; col: number; letter: string }>,
       Array<{ new_bin: string; old_bin: string; username: string | null }>,
       Array<{ old_bin: string; new_bin: string }>,
@@ -78,6 +94,13 @@ export async function GET(req: Request) {
       ['scanned but not in label set', unexpected.length],
       ['one-for-one', oneForOne ? 'YES' : 'NO'],
     ]
+    const minted = pairs.filter(p => p.origin === 'minted')
+    if (minted.length) {
+      summary.push(
+        ['bins added during the conversion', minted.length],
+        ['added but not yet hung', minted.filter(m => !m.hung_at).length],
+      )
+    }
     if (binMap.length || checks.length) {
       summary.push(
         ['bin map rows loaded', binMap.length],
@@ -94,10 +117,17 @@ export async function GET(req: Request) {
       { name: 'SUMMARY', widths: [34, 16], rows: summary },
       {
         name: 'CROSS REFERENCE',
-        widths: [14, 14, 12, 14, 20],
+        widths: [16, 14, 24, 12, 14, 20],
         rows: [
-          ['OLD BIN', 'NEW BIN', 'LOCATION', 'SCANNED BY', 'SCANNED AT'],
-          ...pairs.map(p => [p.old_bin, p.new_bin, p.location ?? '', p.username ?? '', at(p.created_at)]),
+          ['OLD BIN', 'NEW BIN', 'ORIGIN', 'LOCATION', 'SCANNED BY', 'SCANNED AT'],
+          ...pairs.map(p => [
+            p.old_bin,
+            p.new_bin,
+            p.origin === 'minted' ? 'ADDED - CREATE THIS BIN' : 'renamed',
+            p.location ?? '',
+            p.username ?? '',
+            at(p.created_at),
+          ]),
         ],
       },
       {
@@ -111,6 +141,29 @@ export async function GET(req: Request) {
         rows: [['NEW BIN', 'OLD BIN', 'SCANNED BY'], ...unexpected.map(u => [u.new_bin, u.old_bin, u.username ?? ''])],
       },
     ]
+
+    if (minted.length) {
+      // Its own sheet as well as the cross-reference: this is the list of bins
+      // to *create* in the WMS, which is a different job from the renames and
+      // should not arrive mixed in with them.
+      sheets.push({
+        name: 'NEW BINS',
+        widths: [16, 14, 8, 8, 9, 8, 14, 20],
+        rows: [
+          ['PLACEHOLDER', 'NEW BIN', 'ZONE', 'AISLE', 'COLUMN', 'SHELF', 'ADDED BY', 'ADDED AT'],
+          ...minted.map(m => [
+            m.old_bin,
+            m.new_bin,
+            m.new_bin[0],
+            Number(m.new_bin.slice(1, 3)),
+            Number(m.new_bin.slice(3, 5)),
+            m.new_bin[5],
+            m.username ?? '',
+            at(m.created_at),
+          ]),
+        ],
+      })
+    }
 
     if (checks.length) {
       // Everything that failed, first and on its own sheet - this is the

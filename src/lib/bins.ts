@@ -334,6 +334,27 @@ export function pickCodes(all: string[], pick: Pick): PickResult {
 }
 
 /**
+ * The stand-in old bin for a shelf that never had one.
+ *
+ * A bin added during the conversion has no old counterpart, so the row would
+ * otherwise be an orphan and reconcile would sweep the label into "unused,
+ * delete these" - which is how a freshly hung shelf becomes a bin the WMS
+ * cannot find. A placeholder keeps it in `pairs`, where the unique constraints
+ * still guarantee one-for-one and the export still carries it.
+ *
+ * The number comes from a Postgres sequence, not from counting rows: with
+ * twenty people minting at once a `max() + 1` races and hands two shelves the
+ * same placeholder.
+ *
+ * The shape matches neither `parseOld` nor `NEW_PATTERN`, so it can never be
+ * read as a real old bin, and `reversedScan` will not trip over it. Code
+ * branches on `pairs.origin`, never on this prefix.
+ */
+export function mintedOldBin(n: number): string {
+  return `NEW-${String(Math.max(0, Math.floor(n))).padStart(6, '0')}`
+}
+
+/**
  * A new-format code in the old field means the two scans went in backwards -
  * the gun was pointed at the new label first.
  *

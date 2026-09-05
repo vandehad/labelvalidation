@@ -9,7 +9,7 @@ the design decisions and, most importantly, what is not yet done.
 
 ```bash
 npm run dev        # local
-npm test           # 200 logic tests, no DB needed
+npm test           # 214 logic tests, no DB needed
 npm run build      # must stay clean
 npm run migrate    # schema, safe to re-run
 npm run user -- <name> <password> [scanner|admin]
@@ -62,6 +62,12 @@ npm run user -- <name> <password> [scanner|admin]
   breakpoint on the desktop tab - the two are different tools. Its fields carry
   `inputMode="none"`: DataWedge types a scan in as keystrokes, and Android must
   not raise the on-screen keyboard over a five-inch screen on every scan.
+- **A bin added on the floor keeps a placeholder old bin.** A shelf with no
+  old label still gets a code, and `mintedOldBin` gives it `NEW-000117` so the
+  row stays in `pairs`. Without a partner it would look like an orphan and
+  reconcile would list it under "unused, delete these" - which is how a freshly
+  hung shelf becomes a bin the WMS cannot find. Branch on `pairs.origin`, never
+  on the `NEW-` prefix.
 - Scanner input must never be cached. Routes are `force-dynamic`.
 - Refusals happen client-side for speed **and** server-side for truth. Keep
   both in step; `validatePair` in `src/lib/bins.ts` is shared by each.

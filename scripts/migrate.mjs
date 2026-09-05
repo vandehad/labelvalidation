@@ -97,6 +97,23 @@ const steps = [
   ],
   ['checks by site', `CREATE INDEX IF NOT EXISTS checks_site_idx ON checks (site_id, source, created_at DESC)`],
   ['checks by verdict', `CREATE INDEX IF NOT EXISTS checks_verdict_idx ON checks (site_id, source, verdict)`],
+
+  // ---- bins added during the conversion --------------------------------
+  // A shelf found with no old label still needs a code, a printed label and
+  // somebody to hang it. It has no old counterpart, so left alone it looks
+  // like a label nobody paired - and reconcile would list it under "unused,
+  // delete these". Deleting it is how a freshly hung shelf becomes a bin the
+  // WMS cannot find. It gets a placeholder old bin instead and stays in
+  // `pairs`, so every existing rule holds unchanged.
+  ['minted bin numbers', `CREATE SEQUENCE IF NOT EXISTS minted_bin_seq`],
+  // origin is what queries branch on - never the NEW- prefix, which is a
+  // convention someone will eventually type into a scan field.
+  ['pairs.origin', `ALTER TABLE pairs ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'scanned'`],
+  ['labels.origin', `ALTER TABLE labels ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'generated'`],
+  ['labels.printed_at', `ALTER TABLE labels ADD COLUMN IF NOT EXISTS printed_at timestamptz`],
+  ['labels.hung_at', `ALTER TABLE labels ADD COLUMN IF NOT EXISTS hung_at timestamptz`],
+  ['labels.minted_by', `ALTER TABLE labels ADD COLUMN IF NOT EXISTS minted_by integer REFERENCES users(id)`],
+  ['minted labels by site', `CREATE INDEX IF NOT EXISTS labels_origin_idx ON labels (site_id, origin)`],
 ]
 
 if (printOnly) {

@@ -16,6 +16,7 @@ import {
   normalizeScan,
   pickCodes,
   reversedScan,
+  mintedOldBin,
 } from '../src/lib/bins.ts'
 import { makeXlsx } from '../src/lib/xlsx.ts'
 import { parseDelimited, readXlsxRows } from '../src/lib/sheet.ts'
@@ -204,6 +205,18 @@ ok(
   'and the new field still demands the new shape',
   String(validatePair('A-1-1-1', 'A-1-1-2', { enforceFormat: true, location: null })).includes('A0101F01'),
 )
+
+/* ---------- bins added during the conversion ---------- */
+// The placeholder keeps a minted bin in `pairs`, so reconcile sees a paired
+// label instead of an orphan it would tell someone to delete.
+ok('placeholder is zero-padded to six', mintedOldBin(117) === 'NEW-000117')
+ok('and counts up', mintedOldBin(1) === 'NEW-000001' && mintedOldBin(999999) === 'NEW-999999')
+// It must never be mistaken for a real bin at either end.
+ok('never parses as an old bin', parseOld(mintedOldBin(117)) === null)
+ok('never matches the new format', !NEW_PATTERN.test(mintedOldBin(117)))
+ok('does not trip the reversed-scan gate', reversedScan(mintedOldBin(117), 'M0501B01') === null)
+ok('and pairs with a real new code', validatePair(mintedOldBin(117), 'M0501B01', { enforceFormat: true, location: null }) === null)
+ok('placeholders are distinct', new Set([1, 2, 3].map(mintedOldBin)).size === 3)
 
 /* ---------- uploaded bin map ---------- */
 const mp = parseMapTable([

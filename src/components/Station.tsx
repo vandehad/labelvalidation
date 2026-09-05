@@ -10,6 +10,7 @@ import {
   type MapParse,
   type Verdict,
   displayCode,
+  newCode,
   normalizeScan,
   generateLabels,
   pickCodes,
@@ -451,6 +452,8 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
           </div>
         </div>
       </div>
+
+      <AddBin siteId={siteId} onAdded={refresh} />
 
       <div className="stats">
         <Stat n={totals.pairs.toLocaleString()} l="pairs captured" />
@@ -1950,7 +1953,377 @@ function Admin({ user }: { user: User }) {
           way back would be the command line.
         </p>
       </div>
+
+      <Wipe />
     </>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * Clearing a site's data.
+ *
+ * Four things, separately, because they are undone at different moments: a
+ * stale label set is regenerated routinely, while the captured pairs are the
+ * actual work and the hardest thing here to redo. Lumping them into one
+ * "reset" button is how a week of scanning disappears.
+ *
+ * Each one names what it is about to destroy, and the site's name has to be
+ * typed to confirm - a checkbox is too easy to hit with a glove on.
+ */
+function Wipe() {
+  const [sites, setSites] = useState<Site[]>([])
+  const [siteId, setSiteId] = useState<number | null>(null)
+  const [what, setWhat] = useState<string[]>([])
+  const [confirm, setConfirm] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api('/api/sites')
+      setSites(d.sites)
+      setSiteId(cur => cur ?? d.sites[0]?.id ?? null)
+    } catch {
+      /* the header already reports site trouble */
+    }
+  }, [])
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const site = sites.find(s => s.id === siteId)
+  const toggle = (k: string) => setWhat(w => (w.includes(k) ? w.filter(x => x !== k) : [...w, k]))
+  const wholeSite = what.includes('site')
+  const ready = !!site && what.length > 0 && confirm.trim().toLowerCase() === site.name.toLowerCase()
+
+  const go = async () => {
+    if (!site || !ready) return
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await api(`/api/sites/${site.id}?what=${what.join(',')}`, { method: 'DELETE' })
+      const n = Object.entries(r.cleared ?? {})
+        .filter(([, v]) => Number(v) > 0)
+        .map(([k, v]) => `${Number(v).toLocaleString()} ${k}`)
+        .join(', ')
+      setMsg({
+        kind: 'ok',
+        text: r.deletedSite ? `Deleted ${r.deletedSite} — ${n || 'nothing in it'}.` : `Cleared ${n || 'nothing'}.`,
+      })
+      setWhat([])
+      setConfirm('')
+      await load()
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const OPTIONS: Array<[string, string, string]> = [
+    ['labels', 'Label set', 'The generated superset. Regenerate it after changing the zone blocks. Bins added on the floor are kept.'],
+    ['map', 'Uploaded bin map', 'The reference to audit against. Re-uploading replaces it anyway.'],
+    ['checks', 'Audit results', 'Every match, mismatch and not-in-reference recorded so far.'],
+    ['pairs', 'Captured pairs', 'The cross-reference itself — the actual work. There is no undo.'],
+    ['site', 'The whole site', 'Everything above, and the site with it.'],
+  ]
+
+  return (
+    <div className="card" style={{ borderColor: 'var(--bad)' }}>
+      <h2 style={{ color: 'var(--bad)' }}>Clear data</h2>
+      <p className="hint">
+        Nothing here can be undone, and none of it is needed in normal use — regenerating labels and
+        re-uploading a map both replace what was there. Reach for this when something needs to start over.
+      </p>
+      {msg && <div className={`msg show ${msg.kind}`}>{msg.text}</div>}
+
+      <div className="row">
+        <div style={{ flex: '1 1 260px' }}>
+          <label>Site</label>
+          <select
+            value={siteId ?? ''}
+            onChange={e => {
+              setSiteId(Number(e.target.value))
+              setWhat([])
+              setConfirm('')
+            }}
+          >
+            {sites.map(s => (
+              <option key={s.id} value={s.id}>
+                {s.name} — {s.labels.toLocaleString()} labels, {s.pairs.toLocaleString()} pairs
+              </option>
+            ))}
+            {!sites.length && <option value="">— no sites —</option>}
+          </select>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        {OPTIONS.map(([k, title, why]) => (
+          <label
+            key={k}
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'flex-start',
+              textTransform: 'none',
+              letterSpacing: 0,
+              fontWeight: 400,
+              color: 'var(--ink)',
+              fontSize: 14,
+              padding: '7px 0',
+              opacity: wholeSite && k !== 'site' ? 0.45 : 1,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={what.includes(k)}
+              disabled={wholeSite && k !== 'site'}
+              onChange={() => toggle(k)}
+              style={{ width: 18, height: 18, marginTop: 2, flex: '0 0 auto' }}
+            />
+            <span>
+              <b style={{ color: k === 'site' || k === 'pairs' ? 'var(--bad)' : 'var(--ink)' }}>{title}</b>
+              <br />
+              <span className="hint" style={{ margin: 0 }}>
+                {why}
+              </span>
+            </span>
+          </label>
+        ))}
+      </div>
+
+      {what.length > 0 && site && (
+        <>
+          <label style={{ marginTop: 10 }}>Type the site name to confirm: {site.name}</label>
+          <input value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="off" />
+        </>
+      )}
+
+      <div className="btns" style={{ marginTop: 12 }}>
+        <button className="act danger" onClick={go} disabled={busy || !ready}>
+          {busy ? 'Clearing…' : what.length ? `Clear ${what.join(', ')}` : 'Choose what to clear'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * Adding a bin that was never in the plan.
+ *
+ * A shelf with no old label - unassigned, zero inventory - still needs a code,
+ * a label and somebody to hang it.
+ *
+ * The code is assembled from pickers, never typed. Each level is fetched from
+ * the site's own label set, so zone A offers only its aisles and an aisle
+ * offers only its columns: the result is guaranteed both well-formed and
+ * inside the warehouse that was designed. Shelf letters already in that column
+ * are shown as taken rather than left to collide.
+ */
+function AddBin({ siteId, onAdded }: { siteId: number; onAdded: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [zones, setZones] = useState<string[]>([])
+  const [aisles, setAisles] = useState<number[]>([])
+  const [columns, setColumns] = useState<number[]>([])
+  const [taken, setTaken] = useState<string[]>([])
+
+  const [zone, setZone] = useState('')
+  const [aisle, setAisle] = useState<number | ''>('')
+  const [col, setCol] = useState<number | ''>('')
+  const [letter, setLetter] = useState('')
+  const [position, setPosition] = useState(1)
+
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
+  const [made, setMade] = useState<{ code: string; oldBin: string } | null>(null)
+
+  const step = useCallback(
+    async (q: string) => {
+      try {
+        return await api(`/api/mint?site=${siteId}${q}`)
+      } catch (e) {
+        setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+        return null
+      }
+    },
+    [siteId],
+  )
+
+  useEffect(() => {
+    if (!open) return
+    void (async () => {
+      const d = await step('')
+      if (d) setZones(d.zones)
+    })()
+  }, [open, step])
+
+  const pickZone = async (z: string) => {
+    setZone(z)
+    setAisle('')
+    setCol('')
+    setLetter('')
+    setAisles([])
+    setColumns([])
+    setTaken([])
+    if (!z) return
+    const d = await step(`&zone=${z}`)
+    if (d) setAisles(d.aisles)
+  }
+  const pickAisle = async (a: number | '') => {
+    setAisle(a)
+    setCol('')
+    setLetter('')
+    setColumns([])
+    setTaken([])
+    if (a === '') return
+    const d = await step(`&zone=${zone}&aisle=${a}`)
+    if (d) setColumns(d.columns)
+  }
+  const pickCol = async (c: number | '') => {
+    setCol(c)
+    setLetter('')
+    setTaken([])
+    if (c === '') return
+    const d = await step(`&zone=${zone}&aisle=${aisle}&col=${c}`)
+    if (d) setTaken(d.taken)
+  }
+
+  const code =
+    zone && aisle !== '' && col !== '' && letter ? newCode(zone, Number(aisle), Number(col), letter, position) : ''
+  const clash = !!code && taken.includes(code)
+
+  const add = async () => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await api('/api/mint', {
+        method: 'POST',
+        body: JSON.stringify({ siteId, zone, aisle, col, letter, position }),
+      })
+      setMade({ code: r.code, oldBin: r.oldBin })
+      setMsg({ kind: 'ok', text: `${r.code} added as ${r.oldBin}. Print it, then hang it.` })
+      setTaken(t => [...t, r.code])
+      setLetter('')
+      onAdded()
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!open)
+    return (
+      <div className="card">
+        <h2>A shelf with no old label</h2>
+        <p className="hint">
+          An unassigned, zero-inventory bin still needs a code and a label. It is recorded as an addition rather
+          than a rename, so nothing deletes it when the conversion is tidied up.
+        </p>
+        <button className="act ghost" onClick={() => setOpen(true)}>
+          Add a bin
+        </button>
+      </div>
+    )
+
+  return (
+    <div className="card">
+      <h2>Add a bin</h2>
+      <p className="hint">
+        Pick where it is. The code is built from the choices — nothing is typed, so it cannot come out
+        malformed or land outside the warehouse this site describes.
+      </p>
+      {msg && <div className={`msg show ${msg.kind}`}>{msg.text}</div>}
+      <div className="row">
+        <div>
+          <label>Zone</label>
+          <select value={zone} onChange={e => pickZone(e.target.value)}>
+            <option value="">—</option>
+            {zones.map(z => (
+              <option key={z} value={z}>
+                {z}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label>Aisle</label>
+          <select value={aisle} onChange={e => pickAisle(e.target.value === '' ? '' : Number(e.target.value))} disabled={!zone}>
+            <option value="">—</option>
+            {aisles.map(a => (
+              <option key={a} value={a}>
+                {a}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label>Column</label>
+          <select value={col} onChange={e => pickCol(e.target.value === '' ? '' : Number(e.target.value))} disabled={aisle === ''}>
+            <option value="">—</option>
+            {columns.map(c => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label>Shelf</label>
+          <select value={letter} onChange={e => setLetter(e.target.value)} disabled={col === ''}>
+            <option value="">—</option>
+            {Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i)).map(L => {
+              const used = taken.includes(newCode(zone || 'A', Number(aisle) || 0, Number(col) || 0, L, position))
+              return (
+                <option key={L} value={L} disabled={used}>
+                  {L}
+                  {used ? ' — taken' : ''}
+                </option>
+              )
+            })}
+          </select>
+        </div>
+        <div>
+          <label>Position</label>
+          <input
+            type="number"
+            min={1}
+            max={99}
+            value={position}
+            onChange={e => setPosition(Math.min(99, Math.max(1, Number(e.target.value) || 1)))}
+          />
+        </div>
+      </div>
+
+      <div className="row" style={{ marginTop: 10, alignItems: 'flex-end' }}>
+        <div>
+          <label>Code</label>
+          <div className="loc" style={{ fontSize: 18 }}>
+            {code ? displayCode(code) : '— pick a shelf —'}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="act" onClick={add} disabled={busy || !code || clash}>
+            {busy ? 'Adding…' : 'Add this bin'}
+          </button>
+          <button className="act ghost" onClick={() => setOpen(false)}>
+            Close
+          </button>
+        </div>
+      </div>
+      {clash && <div className="msg show warn">{code} already exists here — print and hang that one instead.</div>}
+      {made && (
+        <p className="hint" style={{ marginTop: 10 }}>
+          Last added <code>{made.code}</code> as <code>{made.oldBin}</code>. Print it from the Labels tab —
+          <em> Just these</em> — then hang it and pair it like any other bin.
+        </p>
+      )}
+    </div>
   )
 }
 
