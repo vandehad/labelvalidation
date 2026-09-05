@@ -571,7 +571,14 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
     if (e.key !== 'Enter' && e.key !== 'Tab') return
     e.preventDefault()
     if (from === 'old') {
-      if (oldBin.trim()) newRef.current?.focus()
+      if (!oldBin.trim()) return
+      // Typed the old one? The keyboard's job is done. The next thing is a
+      // scan of the new label, and the gun needs that field focused with the
+      // keyboard down - so drop keyboard mode first, then move.
+      if (typing) {
+        setTyping(false)
+        setTimeout(() => newRef.current?.focus(), 0)
+      } else newRef.current?.focus()
     } else if (newBin.trim()) void commit()
     else oldRef.current?.focus()
   }
@@ -701,7 +708,16 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           </button>
           <button
             className={`m-btn ${typing ? '' : 'ghost'}`}
-            onClick={() => (typing ? setTyping(false) : typeInto(oldBin.trim() ? newRef : oldRef))}
+            onClick={() => {
+              // Whichever way this goes, a field has to end up focused: a
+              // button tap takes focus with it, and a gun scan into nothing
+              // is a scan lost.
+              const target = oldBin.trim() ? newRef : oldRef
+              if (typing) {
+                setTyping(false)
+                setTimeout(() => target.current?.focus(), 0)
+              } else typeInto(target)
+            }}
           >
             {typing ? 'Keyboard off' : 'Type it'}
           </button>
