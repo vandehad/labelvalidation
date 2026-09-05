@@ -232,6 +232,16 @@ aisle is loud, a beep alone gets missed, and a missed mismatch is a wrong label
 left hanging. And focus returning to the old-bin field after every scan, so
 nobody has to tap a screen wearing gloves.
 
+**The camera is a third way in, not a fourth screen.** A phone with no gun can
+press Camera on `/scan` and read labels through `src/lib/camera.ts`. It feeds
+the same two fields and the same `commit`, so every rule — zone field stripped,
+reversed scan refused, one-for-one enforced by Postgres — applies unchanged.
+Android Chrome has a native `BarcodeDetector`; Safari does not, so ZXing is a
+dynamic import fetched only when a camera is opened on a browser without one.
+Keep it dynamic: a static import would hand every TC52 a 450 KB decoder it will
+never run. Nobody has asked for this yet; it is there because it was cheap and
+a foreman with a phone is a plausible Tuesday.
+
 **Superset then reconcile.** Print more labels than needed, scan what is real,
 then delete the leftovers. The alternative — print exactly what the old data
 implies — is what failed at site 18.

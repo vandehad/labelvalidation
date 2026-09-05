@@ -31,6 +31,7 @@ import {
   barcodeModules,
   barcodeData,
 } from '../src/lib/zpl.ts'
+import { debounceCode } from '../src/lib/camera.ts'
 import { writeFileSync, unlinkSync } from 'node:fs'
 
 let pass = 0
@@ -491,6 +492,23 @@ ok('dash goes after the third character', displayCode('A0000A01') === 'A00-00A01
 ok('display uppercases', displayCode('a0102c01') === 'A01-02C01')
 ok('short strings are left alone', displayCode('AB') === 'AB')
 ok('the separator is configurable', displayCode('A0000A01', ' - ') === 'A00 - 00A01')
+
+/* ---------- a camera reads the same label thirty times a second ---------- */
+{
+  let t = 0
+  const fresh = debounceCode(1500, () => t)
+  ok('first read counts', fresh('M0501B01') === true)
+  t += 200
+  ok('the same code 200ms later is the camera still looking at it', fresh('M0501B01') === false)
+  t += 1400
+  // still within the window, because every repeat keeps it open
+  ok('repeats keep the window open', fresh('M0501B01') === false)
+  t += 1600
+  ok('after a clear gap the same code counts again', fresh('M0501B01') === true)
+  t += 50
+  ok('a different code counts immediately', fresh('M0501C01') === true)
+  ok('and the first one is then fresh again too', fresh('M0501B01') === true)
+}
 
 /* ---------- xlsx ---------- */
 const rows: Array<Array<string | number | null>> = [['OLD BIN', 'NEW BIN', 'QTY', 'NOTE']]

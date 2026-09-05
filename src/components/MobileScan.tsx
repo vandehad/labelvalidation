@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { normalizeScan, reversedScan, type Verdict } from '@/lib/bins'
+import { startCamera, cameraAvailable, type StopCamera } from '@/lib/camera'
 
 /**
  * Validation on a handheld - built for a Zebra TC52 in a warehouse aisle.
@@ -97,6 +98,16 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const newRef = useRef<HTMLInputElement>(null)
   const actx = useRef<AudioContext | null>(null)
 
+  // Camera mode, for a phone with no scan gun. The camera is a third way to
+  // get characters into the same two fields; nothing downstream can tell.
+  const [cam, setCam] = useState(false)
+  const [camStep, setCamStep] = useState<'old' | 'new'>('old')
+  const [camMsg, setCamMsg] = useState('')
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const stopCam = useRef<StopCamera | null>(null)
+  const camOld = useRef('') // the old label the camera has read, awaiting the new one
+  const onCodeRef = useRef<(c: string) => void>(() => {})
+
   // Remember the site and reference between shifts - a handheld gets locked
   // and picked up again all day, and re-choosing both every time is friction
   // nobody needs while holding a scan gun.
@@ -171,9 +182,9 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
     }
   }
 
-  const commit = async () => {
-    const o = normalizeScan(oldBin)
-    const n = normalizeScan(newBin)
+  const commit = async (rawOld: string = oldBin, rawNew: string = newBin) => {
+    const o = normalizeScan(rawOld)
+    const n = normalizeScan(rawNew)
     if (!o || !n) return
     if (o === n) {
       setResult({ verdict: 'error', text: 'SAME LABEL TWICE', sub: 'Both fields read the same code.' })
@@ -212,9 +223,54 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       setBusy(false)
       setOldBin('')
       setNewBin('')
+      camOld.current = ''
+      setCamStep('old')
       oldRef.current?.focus()
     }
   }
+
+  // What a decoded barcode does: the first read is the old bin, the second is
+  // the label hung on it and commits the pair. Held in a ref so the camera
+  // loop always calls the current version without being restarted.
+  onCodeRef.current = (text: string) => {
+    if (!camOld.current) {
+      camOld.current = text
+      setOldBin(text)
+      setNewBin('')
+      setCamStep('new')
+      feedback(true)
+      return
+    }
+    const o = camOld.current
+    setNewBin(text)
+    void commit(o, text)
+  }
+
+  useEffect(() => {
+    if (!cam) return
+    const v = videoRef.current
+    if (!v) return
+    let cancelled = false
+    setCamMsg('')
+    startCamera(v, c => onCodeRef.current(c))
+      .then(stop => {
+        if (cancelled) stop()
+        else stopCam.current = stop
+      })
+      .catch(e => {
+        setCamMsg(
+          e instanceof Error && /denied|permission/i.test(e.message)
+            ? 'Camera permission was refused. Allow it in the browser and try again.'
+            : `Could not open the camera. ${e instanceof Error ? e.message : String(e)}`,
+        )
+        setCam(false)
+      })
+    return () => {
+      cancelled = true
+      stopCam.current?.()
+      stopCam.current = null
+    }
+  }, [cam])
 
   const undo = async () => {
     if (!lastId) return
@@ -289,6 +345,15 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
         <span className="m-sub">{result?.sub ?? 'Scan the old label, then the one hung on it.'}</span>
       </div>
 
+      {cam && (
+        <div className="m-cam">
+          <video ref={videoRef} autoPlay muted playsInline />
+          <div className="m-cam-guide" />
+          <div className="m-cam-hint">{camStep === 'old' ? 'Point at the OLD label' : 'Now the label hung on it'}</div>
+        </div>
+      )}
+      {camMsg && <div className="m-verdict error" style={{ minHeight: 0 }}><span className="m-sub">{camMsg}</span></div>}
+
       <div className="m-pad">
         <label className="m-label">1 · Old bin</label>
         <input
@@ -330,11 +395,18 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
               setOldBin('')
               setNewBin('')
               setResult(null)
+              camOld.current = ''
+              setCamStep('old')
               oldRef.current?.focus()
             }}
           >
             Clear
           </button>
+          {cameraAvailable() && (
+            <button className={`m-btn ${cam ? '' : 'ghost'}`} onClick={() => setCam(v => !v)}>
+              {cam ? 'Stop camera' : 'Camera'}
+            </button>
+          )}
         </div>
       </div>
 

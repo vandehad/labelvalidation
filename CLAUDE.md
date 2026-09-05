@@ -74,6 +74,10 @@ npm run user -- <name> <password> [scanner|admin]
   hung shelf becomes a bin the WMS cannot find. Branch on `pairs.origin`, never
   on the `NEW-` prefix.
 - Scanner input must never be cached. Routes are `force-dynamic`.
+- **`@zxing/*` is reached only through the dynamic import in
+  `src/lib/camera.ts`.** It is the phone-camera fallback for browsers without
+  `BarcodeDetector`. A static import anywhere would put a 450 KB decoder into
+  the handheld bundle for every TC52, which never opens a camera.
 - Refusals happen client-side for speed **and** server-side for truth. Keep
   both in step; `validatePair` in `src/lib/bins.ts` is shared by each.
 

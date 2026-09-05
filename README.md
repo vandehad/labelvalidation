@@ -211,6 +211,24 @@ the constraints are different:
 Scanning a printed label works as it does anywhere else — the gun returns the
 six-character zone field and `normalizeScan` strips it.
 
+### With a phone camera
+
+The **Camera** button on `/scan` opens the rear camera as a third way to get a
+code into the same two fields. Point it at the old label, then at the new one;
+the second read commits the pair exactly as if a gun had typed it. Nothing
+downstream can tell the difference — the zone field is stripped and the
+wrong-way-round gate applies.
+
+- Android Chrome uses the browser's built-in `BarcodeDetector`: native, no
+  download.
+- Safari has no such thing, so on an iPhone the ZXing decoder is fetched on
+  first use (about 450 KB). It is a dynamic import in `src/lib/camera.ts` —
+  a TC52 or a laptop, which never open the camera, never download it.
+- A camera reads the same label many times a second. `debounceCode` counts a
+  code once and treats repeats within 1.5 s as the camera still looking at it.
+- It needs HTTPS. `getUserMedia` refuses on plain http, so `npm run dev` on a
+  phone will say the camera could not be opened; the Vercel deployment is fine.
+
 ## Auditing labels that are already hung
 
 Use the **Validate** tab when the labels exist and the question is whether they
@@ -308,6 +326,7 @@ src/
       export                .xlsx workbook
   components/Station.tsx    the desktop UI
   components/MobileScan.tsx the handheld validation page
+  lib/camera.ts             phone camera decoding: BarcodeDetector, else ZXing on demand
   lib/
     bins.ts                 parsing, label generation, pair validation
     auth.ts                 PBKDF2 hashing + HMAC-signed cookie
