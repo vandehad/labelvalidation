@@ -32,6 +32,7 @@ import {
   barcodeData,
 } from '../src/lib/zpl.ts'
 import { debounceCode } from '../src/lib/camera.ts'
+import { parseBearer, relayName, chunkCodes, newRelayKey, sameKey } from '../src/lib/printq.ts'
 import { writeFileSync, unlinkSync } from 'node:fs'
 
 let pass = 0
@@ -508,6 +509,33 @@ ok('the separator is configurable', displayCode('A0000A01', ' - ') === 'A00 - 00
   t += 50
   ok('a different code counts immediately', fresh('M0501C01') === true)
   ok('and the first one is then fresh again too', fresh('M0501B01') === true)
+}
+
+/* ---------- the print queue: what the relay sends and what it is called ---------- */
+{
+  ok('bearer key parsed', parseBearer('Bearer lvr_abc123') === 'lvr_abc123')
+  ok('bearer is case-insensitive and tolerates spaces', parseBearer('  bearer   lvr_abc123 ') === 'lvr_abc123')
+  ok('no header, no key', parseBearer(null) === null)
+  ok('basic auth is not a bearer', parseBearer('Basic abc') === null)
+  ok('a key with a space in it is refused', parseBearer('Bearer lvr abc') === null)
+
+  ok('relay name trimmed', relayName('  ECOM-PC  ') === 'ECOM-PC')
+  ok('relay name never empty', relayName('') === 'relay' && relayName(null) === 'relay')
+  ok('relay name bounded', relayName('x'.repeat(100)).length === 40)
+  ok('runs of whitespace collapse', relayName('front   desk') === 'front desk')
+
+  const k = newRelayKey()
+  ok('key has the prefix and is long enough to not be guessed', /^lvr_[0-9a-f]{48}$/.test(k))
+  ok('two keys differ', newRelayKey() !== k)
+  ok('same key compares equal', sameKey(k, k))
+  ok('different length compares unequal', !sameKey(k, k + 'x'))
+  ok('same length, different content, unequal', !sameKey(k, k.slice(0, -1) + (k.endsWith('0') ? '1' : '0')))
+
+  const chunks = chunkCodes([' m0501b01 ', 'M0501B01', 'M0501B02', '', 'M0501B03'], 2)
+  ok('codes uppercased, trimmed, deduplicated', chunks.flat().join(',') === 'M0501B01,M0501B02,M0501B03')
+  ok('and sliced to the chunk size', chunks.length === 2 && chunks[0].length === 2 && chunks[1].length === 1)
+  ok('nothing in, nothing out', chunkCodes([]).length === 0)
+  ok('the default chunk is one job per 500', chunkCodes(Array.from({ length: 1001 }, (_, i) => `A${String(i).padStart(4, '0')}A01`)).length === 3)
 }
 
 /* ---------- xlsx ---------- */

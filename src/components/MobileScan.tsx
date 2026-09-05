@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { displayCode, newCode, normalizeScan, reversedScan, type Verdict } from '@/lib/bins'
 import { startCamera, cameraAvailable, type StopCamera } from '@/lib/camera'
+import type { RelaySeen } from '@/lib/printq'
 
 /**
  * Validation on a handheld - built for a Zebra TC52 in a warehouse aisle.
@@ -93,10 +94,9 @@ function MobileLogin({ onIn }: { onIn: (u: User) => void }) {
  * from a sequence so the row survives reconcile. The picks are native selects,
  * which Android renders as a spinner a gloved thumb can drive.
  *
- * It records the bin; it does not print it. The relay listens only on the
- * desktop's own loopback, and a browser will not let an https page call an
- * http address on the LAN in any case. The label comes off the desktop:
- * Labels, "Added on the floor".
+ * The label is printed through the app's queue: this device cannot reach the
+ * PC with the printer, but that PC polls the app, so the job lands there
+ * within a couple of seconds. The parent watches it and says when it is out.
  */
 function MobileAdd({
   siteId,
@@ -272,7 +272,7 @@ function MobileAdd({
 
       <div className="m-row">
         <button className="m-btn" onClick={addBin} disabled={busy || !code || clash}>
-          {busy ? 'Adding…' : 'Add this bin'}
+          {busy ? 'Adding…' : 'Add and print'}
         </button>
         <button className="m-btn ghost" onClick={onClose}>
           Back to scanning
@@ -297,6 +297,11 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const [result, setResult] = useState<{ verdict: Verdict | 'error'; text: string; sub?: string } | null>(null)
   const [counts, setCounts] = useState({ match: 0, mismatch: 0, unmapped: 0, checked: 0, reference: 0 })
   const [add, setAdd] = useState(false) // the add-a-bin picker is showing instead of the scan fields
+  // Which relay prints an added bin's label: '' is any relay signed in to
+  // the site. Printing goes through the app's queue - this device cannot
+  // reach the PC with the printer, but that PC can reach the app.
+  const [printer, setPrinter] = useState('')
+  const [relays, setRelays] = useState<RelaySeen[]>([])
 
   const oldRef = useRef<HTMLInputElement>(null)
   const newRef = useRef<HTMLInputElement>(null)
@@ -321,6 +326,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       if (s) setSiteId(s)
       const src = localStorage.getItem('lv.source')
       if (src === 'map' || src === 'pairs') setSource(src)
+      setPrinter(localStorage.getItem('lv.printer') ?? '')
     } catch {
       /* private mode, or storage disabled */
     }
@@ -359,6 +365,22 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   useEffect(() => {
     try { localStorage.setItem('lv.source', source) } catch {}
   }, [source])
+  useEffect(() => {
+    try { localStorage.setItem('lv.printer', printer) } catch {}
+  }, [printer])
+
+  // Who could print right now - shown in settings and used when a bin is added.
+  useEffect(() => {
+    if (!siteId || !(setup || add)) return
+    void (async () => {
+      try {
+        const d = await api(`/api/print?site=${siteId}`)
+        setRelays(d.relays)
+      } catch {
+        /* the print attempt will say */
+      }
+    })()
+  }, [siteId, setup, add])
 
   const feedback = (good: boolean) => {
     try {
@@ -489,6 +511,47 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
     oldRef.current?.focus()
   }
 
+  // A bin added from the aisle gets its label queued at once, and this
+  // watches the job until a relay reports it printed - so the verdict on
+  // screen goes ADDED, PRINTING, PRINTED without anyone touching anything.
+  const printMinted = async (code: string, oldBin: string) => {
+    const base = `${displayCode(code)} is recorded as ${oldBin}.`
+    try {
+      const r = await api('/api/print', {
+        method: 'POST',
+        body: JSON.stringify({ siteId, codes: [code], relay: printer || null }),
+      })
+      const id = r.jobs[0]?.id as number
+      if (!r.online.length) {
+        setResult({
+          verdict: 'unmapped',
+          text: 'ADDED · NOT PRINTED YET',
+          sub: `${base} No relay is signed in to this site, so the label is queued and prints when one is.`,
+        })
+        return
+      }
+      setResult({ verdict: 'match', text: 'ADDED · PRINTING', sub: `${base} Printing at ${r.online.join(', ')}…` })
+      const started = Date.now()
+      while (Date.now() - started < 90_000) {
+        await new Promise(res => setTimeout(res, 2000))
+        const { job } = await api(`/api/print/${id}`)
+        if (job.status === 'done') {
+          setResult({ verdict: 'match', text: 'ADDED · PRINTED', sub: `${base} Printed on ${job.claimed_by}. Hang it.` })
+          feedback(true)
+          return
+        }
+        if (job.status === 'failed') {
+          setResult({ verdict: 'error', text: 'PRINT FAILED', sub: `${base} ${job.error ?? ''} Retry it from the desktop Labels tab.` })
+          feedback(false)
+          return
+        }
+      }
+      setResult({ verdict: 'unmapped', text: 'ADDED · STILL QUEUED', sub: `${base} The relay has not picked it up yet. It stays queued.` })
+    } catch (e) {
+      setResult({ verdict: 'error', text: 'ADDED · NOT PRINTED', sub: `${base} ${e instanceof Error ? e.message : String(e)}` })
+    }
+  }
+
   const key = (e: React.KeyboardEvent<HTMLInputElement>, from: 'old' | 'new') => {
     if (e.key !== 'Enter' && e.key !== 'Tab') return
     e.preventDefault()
@@ -527,6 +590,16 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
             <option value="map">The uploaded bin map</option>
             <option value="pairs">Bins scanned in on this site</option>
           </select>
+          <label className="m-label">Printer for added bins</label>
+          <select className="m-in" value={printer} onChange={e => setPrinter(e.target.value)}>
+            <option value="">Any relay signed in to this site</option>
+            {relays.map(r => (
+              <option key={r.name} value={r.name}>
+                {r.name} — {r.target ?? '?'}
+                {r.online ? '' : ' (offline)'}
+              </option>
+            ))}
+          </select>
           <div className="m-row">
             <button className="m-btn ghost" onClick={() => setSetup(false)}>
               Done
@@ -562,13 +635,10 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
         <MobileAdd
           siteId={siteId}
           onAdded={(code, oldBin) => {
-            setResult({
-              verdict: 'match',
-              text: 'ADDED',
-              sub: `${displayCode(code)} is recorded as ${oldBin}. Print it from the desktop - Labels, "Added on the floor" - then hang it.`,
-            })
+            setResult({ verdict: 'match', text: 'ADDED', sub: `${displayCode(code)} is recorded as ${oldBin}. Queuing the label…` })
             feedback(true)
             void refresh()
+            void printMinted(code, oldBin)
           }}
           onClose={() => {
             setAdd(false)

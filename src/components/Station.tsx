@@ -20,6 +20,7 @@ import {
 } from '@/lib/bins'
 import { readTable, parseDelimited } from '@/lib/sheet'
 import { zplBatch, barcodeData, type LabelSpec, type Symbology } from '@/lib/zpl'
+import type { Job as PrintJob, RelaySeen } from '@/lib/printq'
 
 type User = { name: string; role: string }
 type Site = { id: number; name: string; status: string; labels: number; pairs: number }
@@ -809,11 +810,12 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
 /**
  * Printing to the Zebra.
  *
- * A browser cannot open a raw socket and cannot reach a USB printer, so there
- * are two ways out: download the ZPL and send it however you already do, or
- * run `scripts/print-server.mjs` on the PC the printer is attached to and let
- * this post to it. The relay covers both network and USB printers; the
- * download covers everything else.
+ * A browser cannot open a raw socket and cannot reach a USB printer, so the
+ * labels go through the print queue: this queues them for the site, and the
+ * relay (print-server.exe, on the PC with the printer, signed in to this site)
+ * pulls and prints them. The same queue serves the handhelds and phones,
+ * which cannot reach that PC at all. A relay on *this* PC can still be sent
+ * to directly, and the ZPL can always be downloaded.
  *
  * Labels are printed from what is *stored* for the site, never from the form
  * above, so what comes off the printer is what the database will accept.
@@ -821,6 +823,11 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
 function Print({ siteId }: { siteId: number }) {
   const [relay, setRelay] = useState('http://localhost:9110')
   const [status, setStatus] = useState<{ ok: boolean; target?: string; mode?: string } | null>(null)
+  // Where the labels go. 'queue' hands them to whichever relay is signed in
+  // to this site, 'relay:NAME' pins one, and 'direct' is a relay on this PC.
+  const [route, setRoute] = useState('queue')
+  const [relays, setRelays] = useState<RelaySeen[]>([])
+  const [jobs, setJobs] = useState<PrintJob[]>([])
   const [dpi, setDpi] = useState<203 | 300>(203)
   const [symbology, setSymbology] = useState<Symbology>('code39')
   // The site's own format is a 4in format - its padded 14-character symbol at
@@ -877,6 +884,32 @@ function Print({ siteId }: { siteId: number }) {
   useEffect(() => {
     void load()
   }, [load])
+
+  const loadQueue = useCallback(async () => {
+    try {
+      const d = await api(`/api/print?site=${siteId}`)
+      setRelays(d.relays)
+      setJobs(d.jobs)
+    } catch {
+      /* shown when a print is attempted */
+    }
+  }, [siteId])
+
+  useEffect(() => {
+    void loadQueue()
+    const t = setInterval(() => void loadQueue(), 4000)
+    return () => clearInterval(t)
+  }, [loadQueue])
+
+  const jobAction = async (id: number, what: 'cancel' | 'retry') => {
+    try {
+      if (what === 'cancel') await api(`/api/print/${id}`, { method: 'DELETE' })
+      else await api(`/api/print/${id}`, { method: 'POST', body: JSON.stringify({ action: 'retry' }) })
+      await loadQueue()
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    }
+  }
 
   const check = async () => {
     setStatus(null)
@@ -940,25 +973,52 @@ function Print({ siteId }: { siteId: number }) {
     // progress, rather than one request that looks like a hang.
     const CHUNK = 500
     try {
+      if (route === 'direct') {
+        for (let i = 0; i < selected.length; i += CHUNK) {
+          const slice = selected.slice(i, i + CHUNK)
+          setMsg({ kind: 'warn', text: `Sending ${Math.min(i + CHUNK, selected.length).toLocaleString()} of ${selected.length.toLocaleString()}…` })
+          const r = await fetch(relay.replace(/\/$/, '') + '/print', {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: zplBatch(slice, spec),
+          })
+          if (!r.ok) {
+            const b = await r.json().catch(() => ({}))
+            throw new Error(b.error || `Relay returned ${r.status}`)
+          }
+        }
+        setMsg({ kind: 'ok', text: `Sent ${(selected.length * spec.copies).toLocaleString()} label(s) to the printer.` })
+        return
+      }
+
+      // The queue. The ZPL is rendered here, with this card's stock and nudge,
+      // so what the relay prints is exactly what the preview describes.
+      const pinned = route.startsWith('relay:') ? route.slice(6) : null
+      let n = 0
+      let online: string[] = []
       for (let i = 0; i < selected.length; i += CHUNK) {
         const slice = selected.slice(i, i + CHUNK)
-        setMsg({ kind: 'warn', text: `Sending ${Math.min(i + CHUNK, selected.length).toLocaleString()} of ${selected.length.toLocaleString()}…` })
-        const r = await fetch(relay.replace(/\/$/, '') + '/print', {
+        setMsg({ kind: 'warn', text: `Queuing ${Math.min(i + CHUNK, selected.length).toLocaleString()} of ${selected.length.toLocaleString()}…` })
+        const r = await api('/api/print', {
           method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: zplBatch(slice, spec),
+          body: JSON.stringify({ siteId, codes: slice, copies: spec.copies, relay: pinned, zpl: zplBatch(slice, spec) }),
         })
-        if (!r.ok) {
-          const b = await r.json().catch(() => ({}))
-          throw new Error(b.error || `Relay returned ${r.status}`)
-        }
+        online = r.online
+        n++
       }
-      setMsg({ kind: 'ok', text: `Sent ${(selected.length * spec.copies).toLocaleString()} label(s) to the printer.` })
+      const total = (selected.length * spec.copies).toLocaleString()
+      setMsg(
+        online.length
+          ? { kind: 'ok', text: `Queued ${total} label(s) in ${n} job(s). Printing at ${online.join(', ')} — progress below.` }
+          : {
+              kind: 'warn',
+              text: `Queued ${total} label(s) in ${n} job(s), but no relay is signed in to this site right now. They print as soon as one is: open print-server.exe, connect it with the key from the Admin tab, and pick this site.`,
+            },
+      )
+      await loadQueue()
     } catch (e) {
-      setMsg({
-        kind: 'bad',
-        text: `${e instanceof Error ? e.message : String(e)} — is the relay running? node scripts/print-server.mjs --host <printer-ip>`,
-      })
+      const why = e instanceof Error ? e.message : String(e)
+      setMsg({ kind: 'bad', text: route === 'direct' ? `${why} — is the relay running on this PC?` : why })
     } finally {
       setBusy(false)
     }
@@ -1096,20 +1156,51 @@ function Print({ siteId }: { siteId: number }) {
       </div>
 
       <div className="row" style={{ marginTop: 10 }}>
-        <div style={{ flex: '1 1 260px' }}>
-          <label>Local print relay</label>
-          <input value={relay} onChange={e => setRelay(e.target.value)} placeholder="http://localhost:9110" />
+        <div style={{ flex: '1 1 300px' }}>
+          <label>Send to</label>
+          <select value={route} onChange={e => setRoute(e.target.value)}>
+            <option value="queue">The print queue — any relay signed in to this site</option>
+            {relays.map(r => (
+              <option key={r.name} value={`relay:${r.name}`}>
+                {r.name} — {r.target ?? '?'}
+                {r.online ? '' : ' (offline)'}
+              </option>
+            ))}
+            <option value="direct">A relay on this PC, directly</option>
+          </select>
         </div>
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
-          <button className="act ghost" onClick={check}>
-            Test relay
-          </button>
-          {status && (
-            <span className={`pill ${status.ok ? 'ok' : 'bad'}`}>
-              {status.ok ? `${status.mode} → ${status.target}` : 'not reachable'}
-            </span>
-          )}
-        </div>
+        {route === 'direct' ? (
+          <>
+            <div style={{ flex: '1 1 220px' }}>
+              <label>Relay address</label>
+              <input value={relay} onChange={e => setRelay(e.target.value)} placeholder="http://localhost:9110" />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+              <button className="act ghost" onClick={check}>
+                Test relay
+              </button>
+              {status && (
+                <span className={`pill ${status.ok ? 'ok' : 'bad'}`}>
+                  {status.ok ? `${status.mode} → ${status.target}` : 'not reachable'}
+                </span>
+              )}
+            </div>
+          </>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+            {relays.some(r => r.online) ? (
+              relays
+                .filter(r => r.online)
+                .map(r => (
+                  <span key={r.name} className="pill ok">
+                    {r.name} → {r.target}
+                  </span>
+                ))
+            ) : (
+              <span className="pill warn">no relay signed in to this site — jobs wait until one is</span>
+            )}
+          </div>
+        )}
       </div>
 
       {!selected.length && (codes?.length ?? 0) > 0 && (
@@ -1136,6 +1227,54 @@ function Print({ siteId }: { siteId: number }) {
         </button>
         {busy && <span className="spin" />}
       </div>
+
+      {jobs.length > 0 && (
+        <div className="scroll" style={{ marginTop: 12, maxHeight: 240 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Job</th>
+                <th>Labels</th>
+                <th>Status</th>
+                <th>Relay</th>
+                <th>Who</th>
+                <th>When</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {jobs.map(j => (
+                <tr key={j.id}>
+                  <td>#{j.id}</td>
+                  <td>
+                    {j.labels.toLocaleString()}
+                    {j.copies > 1 ? ` ×${j.copies}` : ''}
+                  </td>
+                  <td>
+                    <span className={`pill ${j.status === 'done' ? 'ok' : j.status === 'failed' ? 'bad' : 'warn'}`}>{j.status}</span>
+                    {j.error ? ` ${j.error}` : ''}
+                  </td>
+                  <td>{j.claimed_by ?? j.relay ?? 'any'}</td>
+                  <td>{j.username ?? ''}</td>
+                  <td>{new Date(j.created_at).toLocaleTimeString()}</td>
+                  <td>
+                    {j.status === 'queued' && (
+                      <button className="act ghost" onClick={() => jobAction(j.id, 'cancel')}>
+                        Cancel
+                      </button>
+                    )}
+                    {j.status === 'failed' && (
+                      <button className="act ghost" onClick={() => jobAction(j.id, 'retry')}>
+                        Retry
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <p className="hint" style={{ marginTop: 10 }}>
         {stock === 'site'
@@ -1982,8 +2121,108 @@ function Admin({ user }: { user: User }) {
         </p>
       </div>
 
+      <RelayCard />
       <Wipe />
     </>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * The relays. print-server.exe on a PC with a printer signs in with this key,
+ * picks a site, and prints whatever that site queues. The key is shown here
+ * because a relay is set up by whoever is standing at that PC, and a value
+ * only in an environment variable is one nobody can copy from a phone.
+ */
+function RelayCard() {
+  const [key, setKey] = useState<string | null>(null)
+  const [relays, setRelays] = useState<RelaySeen[]>([])
+  const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api('/api/print/key')
+      setKey(d.key)
+      setRelays(d.relays)
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    }
+  }, [])
+
+  useEffect(() => {
+    void load()
+    const t = setInterval(() => void load(), 5000)
+    return () => clearInterval(t)
+  }, [load])
+
+  const rotate = async () => {
+    if (!confirm('Every relay stops printing until it is given the new key. Continue?')) return
+    try {
+      const d = await api('/api/print/key', { method: 'POST' })
+      setKey(d.key)
+      setMsg({ kind: 'ok', text: 'New key. Paste it into each relay\u2019s setup page.' })
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  const ago = (iso: string) => {
+    const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000))
+    return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : new Date(iso).toLocaleString()
+  }
+
+  return (
+    <div className="card">
+      <h2>Print relays</h2>
+      <p className="hint">
+        A relay is <code>print-server.exe</code> on the PC with the printer. It signs in to the app with this
+        key, picks a site, and prints whatever that site queues — from a laptop, a TC52, a phone or the MC92N0s
+        — so nothing on the floor needs to reach the printer itself. One relay per site; a second site gets its
+        own relay and its own printer.
+      </p>
+      {msg && <div className={`msg show ${msg.kind}`}>{msg.text}</div>}
+      <label>Relay key</label>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <code style={{ fontSize: 15, userSelect: 'all', padding: '6px 10px' }}>{key ?? '…'}</code>
+        <button className="act ghost" onClick={() => key && navigator.clipboard?.writeText(key)} disabled={!key}>
+          Copy
+        </button>
+        <button className="act ghost" onClick={rotate} disabled={!key}>
+          New key
+        </button>
+      </div>
+      <p className="hint" style={{ marginTop: 8 }}>
+        On the relay&apos;s setup window: paste the web app address and this key, check the connection, pick the
+        site, save. It starts printing for that site straight away and remembers the lot.
+      </p>
+      {relays.length > 0 && (
+        <table style={{ marginTop: 10 }}>
+          <thead>
+            <tr>
+              <th>Relay</th>
+              <th>Site</th>
+              <th>Printer</th>
+              <th>Last seen</th>
+              <th>Printed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {relays.map(r => (
+              <tr key={r.name}>
+                <td>
+                  <span className={`pill ${r.online ? 'ok' : 'bad'}`}>{r.online ? 'online' : 'offline'}</span> {r.name}
+                </td>
+                <td>{r.site_name ?? '—'}</td>
+                <td>{r.target ?? '—'}</td>
+                <td>{ago(r.last_seen)}</td>
+                <td>{r.printed.toLocaleString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   )
 }
 
@@ -2245,6 +2484,23 @@ function AddBin({ siteId, onAdded }: { siteId: number; onAdded: () => void }) {
     }
   }
 
+  const printMade = async (code: string) => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await api('/api/print', { method: 'POST', body: JSON.stringify({ siteId, codes: [code] }) })
+      setMsg(
+        r.online.length
+          ? { kind: 'ok', text: `${code} is printing at ${r.online.join(', ')}. Hang it, then pair it like any other bin.` }
+          : { kind: 'warn', text: `${code} is queued. No relay is signed in to this site right now; it prints as soon as one is.` },
+      )
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (!open)
     return (
       <div className="card">
@@ -2347,8 +2603,12 @@ function AddBin({ siteId, onAdded }: { siteId: number; onAdded: () => void }) {
       {clash && <div className="msg show warn">{code} already exists here — print and hang that one instead.</div>}
       {made && (
         <p className="hint" style={{ marginTop: 10 }}>
-          Last added <code>{made.code}</code> as <code>{made.oldBin}</code>. Print it from the Labels tab —
-          <em> Added on the floor</em> — then hang it and pair it like any other bin.
+          Last added <code>{made.code}</code> as <code>{made.oldBin}</code>.{' '}
+          <button className="act ghost" onClick={() => printMade(made.code)} disabled={busy}>
+            Print it
+          </button>{' '}
+          — it comes out of the relay signed in to this site. Every added bin can also be printed later from the
+          Labels tab, <em>Added on the floor</em>.
         </p>
       )}
     </div>

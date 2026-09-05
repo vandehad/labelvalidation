@@ -190,13 +190,36 @@ is the **zone** - `M0501B01` encodes as `M     M0501B01`. `barcodeData` in
 the first character of the code, and a mistyped one would put the wrong
 character in every barcode of a zone with nothing on screen to show it.
 
-**Printing goes through a local relay, not the browser.** A page cannot open a
-raw socket and cannot see a USB printer. `scripts/print-server.mjs` runs on the
-PC the printer is attached to and forwards ZPL either over TCP to port 9100 or
-through the Windows spooler in RAW mode. RAW is not optional: ZPL through a
-normal driver prints the text of the ZPL. The Windows path uses PowerShell with
-an inline `winspool` P/Invoke rather than a native module, because a native
-module would want a compiler on a warehouse PC.
+**Printing is a queue the relay pulls from, not a push to the printer.** A
+page cannot open a raw socket and cannot see a USB printer, so something on
+the PC with the printer has to bridge it — `scripts/print-server.cjs`, which
+forwards ZPL over TCP to port 9100 or through the Windows spooler in RAW mode.
+(RAW is not optional: ZPL through a normal driver prints the text of the ZPL.
+The Windows path uses PowerShell with an inline `winspool` P/Invoke rather
+than a native module, because a native module would want a compiler on a
+warehouse PC.)
+
+The first version had browsers POST to that relay at `localhost:9110`. That
+only ever worked for the one PC the relay was on: a TC52 in an aisle cannot
+reach it, and Chrome will not let an https page call an http LAN address
+regardless — `Access-Control-Allow-Private-Network` rescues `localhost` only.
+So the direction was turned round. Screens queue a job in `print_jobs` through
+`/api/print`; the relay signs in with a key from `settings.relay_key`, is bound
+to one site on its setup page, and polls `/api/print/next` for that site's
+jobs. Outbound https from any PC is the one path that always works, which is
+why the desktop, the TC52, a phone and the MC92N0 all print identically now.
+The relay verifies the address and key before it will save them, so a relay
+that silently prints nothing cannot be configured.
+
+Things that matter in `src/lib/printq.ts`: the claim is one `UPDATE … FOR
+UPDATE SKIP LOCKED` so two relays on a site never print the same job; a job
+claimed three minutes ago and never finished goes back in the queue, so a
+relay dying mid-print loses nothing; every code queued is checked against the
+site's stored `labels` server-side, so the reprint rule holds no matter which
+screen asked; and the key is in the database rather than an environment
+variable, because a relay is set up by whoever is standing at that PC and the
+Admin tab is where they can read it from. The direct `localhost` path is kept
+as an option on the Print card for a laptop sitting beside the printer.
 
 **Zone blocks, not one uniform shape.** A warehouse divides into stretches of
 aisles - 1-26 zone A at 24 columns of 10 shelves, 27-36 zone B at 18 of 8 - and
@@ -242,15 +265,14 @@ Keep it dynamic: a static import would hand every TC52 a 450 KB decoder it will
 never run. Nobody has asked for this yet; it is there because it was cheap and
 a foreman with a phone is a plausible Tuesday.
 
-**Add-a-bin is on all three screens, and the handheld does not print.** The
-desktop card, `/scan` and `/wm` all go through `src/lib/mint.ts`, so they
-cannot disagree about what a valid new bin is. The handheld records the bin
-and hands printing to the desktop, deliberately: the relay binds to
-`127.0.0.1`, and even if it bound to the LAN, Chrome refuses an https page
-calling `http://192.168.x.x` — `Access-Control-Allow-Private-Network` only
-rescues `localhost`. So the Labels tab has an "Added on the floor" pick that
-lists every minted bin on the site, and the person at the printer prints
-them in one go. `/api/labels` returns `origin` for that; nothing else reads it.
+**Add-a-bin is on all three screens, and all three print.** The desktop
+card, `/scan` and `/wm` go through `src/lib/mint.ts`, so they cannot disagree
+about what a valid new bin is, and each queues the label through the same
+`queueJobs` the moment the bin is made. The handheld then watches the job and
+walks the verdict from ADDED to PRINTING to PRINTED, so nobody has to ask
+whether the label came out. The Labels tab's "Added on the floor" pick still
+lists every minted bin for printing in one go; `/api/labels` returns `origin`
+for that.
 
 **Superset then reconcile.** Print more labels than needed, scan what is real,
 then delete the leftovers. The alternative — print exactly what the old data
@@ -366,8 +388,9 @@ actual simultaneous case — two scan guns, one shelf — has not been staged.
   zone/aisle you are standing in; an audit accepts any bin at any time, because
   auditing tends to jump around. If audits turn out to want it too, `Loc` and
   `validatePair` are already there.
-- No label PDF/print output. Labels export as `.xlsx`; whatever prints the
-  barcodes is outside this app.
+- The relay polls every 15 s when idle, which keeps the Neon database awake
+  while a relay window is open. Fine on a paid plan; on a free one, stop the
+  relay when nobody is printing, or add a "pause" to it.
 - No site archiving, no delete, no per-site user assignment.
 - Polling is every 10s. Fine for a handful of scanners; if it gets busy, move
   to SSE or shorten it.

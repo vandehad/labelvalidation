@@ -138,29 +138,59 @@ follows the last space, so old and new labels scan identically.
 ### Getting them to the printer
 
 A browser has no raw socket API and cannot see a USB printer, so a hosted page
-cannot reach a Zebra by itself. Something local has to bridge it.
+cannot reach a Zebra by itself. And a browser on the floor cannot reach the PC
+the Zebra is plugged into either: Chrome refuses to let an https page call an
+http address on the LAN. So labels are not pushed to the printer — they are
+**queued in the app, and the relay pulls them.**
 
-**The easy way — a standalone executable, nothing installed.**
+```
+laptop / TC52 / phone / MC92N0  ──queue──▶  app (Vercel)  ◀──poll──  relay on the PC with the printer
+```
+
+Outbound https from that PC is the one path that always works. Every screen
+prints the same way, and none of them has to know where the printer is.
+
+**The relay — a standalone executable, nothing installed.**
 
 ```bash
 npm run build-exe        # produces dist/print-server.exe, ~88 MB
 ```
 
 Copy that one file to the PC with the printer and double-click it. It opens its
-own window — Edge or Chrome in `--app` mode, so no address bar or tabs — where
-you pick **network** and type the printer's IP, or **USB/shared** and choose
-from the installed queues, then *Print a test label* to prove the path before
-touching the web app.
+own window — Edge or Chrome in `--app` mode, so no address bar or tabs — with
+two things to fill in:
+
+1. **Choose the printer.** *Network* and the printer's IP, or *USB/shared* and
+   one of the installed queues. *Print a test label* proves that half.
+2. **Connect to the web app.** The app's address, the relay key from the app's
+   **Admin → Print relays** card, a name for this relay, then *Check connection*
+   and pick the **site** it prints for. *Save* — it starts polling straight
+   away and remembers all of it.
+
+A relay serves **one site**. Two sites queuing at once each get their own
+labels on their own printer; a second site needs its own relay (any PC, same
+key, different site). Several relays on one site share the work, and the Print
+card can pin a job to a named one.
+
+It polls every couple of seconds while there is work and every fifteen when
+idle. A job it fails on — printer off, cable out — is reported back with the
+reason and can be retried from the Print card. A relay that dies mid-job loses
+nothing: after three minutes the job goes back in the queue.
+
+There is an optional *ZPL sent before every job* box: `^XA^PW610^XZ` for a
+printer that forgets its width at power-on, say. It is per relay because it is
+about that printer.
 
 Day to day:
 
 | | |
 | --- | --- |
-| Change the printer | reopen `http://localhost:9110`, or just run the .exe again |
+| Change printer or site | reopen `http://localhost:9110`, or just run the .exe again |
+| See what it is doing | the status line in its window, or the relay table on the Admin tab |
 | Stop it | **Stop the relay** in the window, or Ctrl-C in the console |
-| Start it | double-click the .exe; it remembers the printer |
+| Start it | double-click the .exe; it remembers everything |
 
-The choice lives in `~/.labelvalidation/print-server.json`; delete that to start
+Settings live in `~/.labelvalidation/print-server.json`; delete that to start
 over. Closing the app window alone leaves it running in the background — the
 Stop button is what actually ends it.
 
@@ -175,14 +205,15 @@ npm run print-server -- --host 192.168.60.81      # network printer
 npm run print-server -- --printer "Zebra ECOM2"   # USB / local queue
 ```
 
-Either way it listens on `http://localhost:9110`, accepts ZPL at `/print`, and
-forwards it — a raw socket to port 9100 for a network printer, or the Windows
-spooler in **RAW** mode for a local one. RAW is not optional: ZPL through a
-normal driver prints the *text* of the ZPL, pages of it.
+Either way it forwards ZPL as a raw socket to port 9100 for a network printer,
+or through the Windows spooler in **RAW** mode for a local one. RAW is not
+optional: ZPL through a normal driver prints the *text* of the ZPL, pages of it.
 
-Loopback only, so nothing off that PC can drive your printer, and the app posts
-in chunks of 500 so a run of thousands shows progress rather than looking like
-a hang.
+**The direct path still exists.** The relay also listens on
+`http://localhost:9110` and accepts ZPL at `/print`, and the Print card's *Send
+to* menu offers *A relay on this PC, directly* — no key, no queue, for a laptop
+sitting next to the printer. Loopback only, so nothing off that PC can drive
+the printer that way.
 
 **Or no local software at all:** *Download .zpl* in the Print card, then
 `copy /b labels.zpl \\localhost\ZebraECOM2`.
@@ -236,12 +267,14 @@ same picker as the desktop card and the Windows Mobile page — zone, aisle,
 column, shelf, position, each offered from the site's own label set, so the
 code is assembled rather than typed — on native selects, which Android shows
 as a spinner. The bin is recorded with a placeholder old bin (`NEW-000117`)
-so reconcile keeps it, and the page goes straight back to scanning.
+so reconcile keeps it.
 
-It does not print. The relay only listens on the desktop's own loopback, and a
-browser will not let an https page call an http address on the LAN in any
-case. The label comes off the desktop: Labels → *What to print* → **Added on
-the floor**, which lists every minted bin on the site.
+**Add and print** queues the label at once and the verdict follows it:
+*ADDED · PRINTING* at the named relay, then *ADDED · PRINTED* when the relay
+reports it out, with a buzz. If no relay is signed in to the site it says so —
+the job waits, and prints the moment one connects. The settings gear lets a
+device pin a particular relay. The desktop's *Added on the floor* pick still
+lists every minted bin, for printing them in one go later.
 
 ## Auditing labels that are already hung
 
@@ -335,6 +368,8 @@ src/
       users/[id]            enable, disable, change role (admin)
       map                   upload / inspect / clear the bin map
       checks                record an audit scan, list recent, tallies
+      print                 the queue: screens POST jobs; next/ is the relay's poll;
+                            [id] is watch / cancel / retry / relay's report; key is the Admin key
       checks/[id]           undo
       reconcile             unused / unexpected / one-for-one
       export                .xlsx workbook
@@ -352,7 +387,7 @@ src/
 scripts/
   migrate.mjs               schema, safe to re-run
   create-user.mjs           add or update a user
-  print-server.cjs          local relay: USB or network Zebra
+  print-server.cjs          the relay: polls the app's queue, prints to a USB or network Zebra
   build-exe.mjs             packages the relay as a standalone .exe
   test.ts                   200 logic tests, no database needed
 standalone/                 the offline single-file version this grew from
@@ -370,7 +405,17 @@ pairs   id, site_id, old_bin, new_bin, location, user_id, created_at
 bin_map site_id, old_bin, new_bin, row_no       PRIMARY KEY (site_id, old_bin)
 checks  id, site_id, source, old_bin, new_bin, expected_bin, verdict,
         user_id, created_at            UNIQUE (site_id, source, old_bin)
+
+print_jobs id, site_id, codes[], copies, zpl, relay, status, error, user_id,
+           created_at, claimed_at, claimed_by, done_at
+relays     name, site_id, target, version, printed, last_seen
+settings   key, value                  holds relay_key
 ```
+
+`print_jobs.status` runs queued → printing → done | failed. A relay claims with
+`UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED LIMIT 1)`, so two relays
+on one site never print the same job. `relays` is a heartbeat: "online" on the
+screens means "polled in the last 45 seconds".
 
 `bin_map` has no unique constraint on `new_bin` on purpose: a map that reuses a
 code is a defect in the map, and refusing to load it would hide the defect

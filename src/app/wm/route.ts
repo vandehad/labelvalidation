@@ -2,6 +2,7 @@ import { db } from '@/lib/db'
 import { currentUser, findUser, verifyPassword, sessionFor, setSessionCookie } from '@/lib/auth'
 import { verdictFor, normalizeScan, reversedScan, newCode, displayCode } from '@/lib/bins'
 import { mintOptions, mintBin, checkPick, MintRefused } from '@/lib/mint'
+import { queueJobs, onlineRelays, QueueRefused } from '@/lib/printq'
 import { cookies } from 'next/headers'
 
 export const dynamic = 'force-dynamic'
@@ -245,19 +246,42 @@ ${hidden}
   )
 }
 
-function addedScreen(code: string, oldBin: string, tally: string) {
+function addedScreen(code: string, oldBin: string, tally: string, print: { colour: string; text: string }) {
+  // The label is queued the moment the bin is made - the relay on the PC
+  // with the printer polls the app, so this handheld never has to reach it.
   return page(
     'Bin added',
     `${bar(tally)}
 <table><tr><td bgcolor="#1b7f4b"><font color="#ffffff">
 <div class="big">ADDED</div>
-<div class="sub">${esc(displayCode(code))} &nbsp; as &nbsp; ${esc(oldBin)}<br>Print it, then hang it.</div>
+<div class="sub">${esc(displayCode(code))} &nbsp; as &nbsp; ${esc(oldBin)}</div>
 </font></td></tr></table>
+<table><tr><td bgcolor="${print.colour}"><font color="#ffffff"><div class="sub" style="padding-top:10px">${esc(print.text)}</div></font></td></tr></table>
+<form method="post" action="/wm">
+<input type="hidden" name="do" value="print">
+<input type="hidden" name="code" value="${esc(code)}">
 <div style="padding:14px 8px">
-<a class="go" href="/wm" style="font-size:22px">Back to scanning</a>
+<input class="go" type="submit" value="Print it again">
+&nbsp;&nbsp;<a class="go" href="/wm" style="font-size:22px">Back to scanning</a>
 &nbsp;&nbsp;<a href="/wm?do=add">add another</a>
-</div>`,
+</div>
+</form>`,
   )
+}
+
+/** Queue one label for the site's relay and say what happened, in a colour. */
+async function printOne(siteId: number, userId: number, code: string): Promise<{ colour: string; text: string }> {
+  try {
+    const sql = db()
+    await queueJobs(sql, { siteId, userId, codes: [code] })
+    const online = await onlineRelays(sql, siteId)
+    return online.length
+      ? { colour: '#1b7f4b', text: `Label sent to ${online.join(', ')}. Hang it when it comes out.` }
+      : { colour: '#8a6100', text: 'Label queued. No relay is signed in to this site right now; it prints when one is.' }
+  } catch (e) {
+    const why = e instanceof QueueRefused ? e.message : e instanceof Error ? e.message : String(e)
+    return { colour: '#a32020', text: `Not printed: ${why}` }
+  }
 }
 
 /* ---------------- state ---------------- */
@@ -356,12 +380,24 @@ export async function POST(req: Request) {
     try {
       const pick = checkPick({ ...chosen, letter: String(form.get('letter') ?? ''), position: Number(form.get('position') ?? 1) })
       const made = await mintBin(db(), st.site, user.uid, pick)
-      return addedScreen(made.code, made.oldBin, await tallyFor(st))
+      const print = await printOne(st.site, user.uid, made.code)
+      return addedScreen(made.code, made.oldBin, await tallyFor(st), print)
     } catch (e) {
       const why = e instanceof MintRefused ? e.message : e instanceof Error ? e.message : String(e)
       const opts = await mintOptions(db(), st.site, chosen.zone, chosen.aisle, chosen.col)
       return addScreen(opts, chosen, why)
     }
+  }
+
+  // Print an added bin's label again - the first one jammed, or the relay
+  // was not signed in when it was made.
+  if (doing === 'print') {
+    const code = normalizeScan(String(form.get('code') ?? ''))
+    const rows = (await db()`
+      SELECT old_bin FROM pairs WHERE site_id = ${st.site} AND new_bin = ${code} AND origin = 'minted' LIMIT 1`) as Array<{ old_bin: string }>
+    if (!rows[0]) return Response.redirect(new URL('/wm', req.url), 303)
+    const print = await printOne(st.site, user.uid, code)
+    return addedScreen(code, rows[0].old_bin, await tallyFor(st), print)
   }
 
   // Step one: the old label. One field, so Enter from the wedge lands here.

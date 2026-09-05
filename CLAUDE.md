@@ -74,6 +74,14 @@ npm run user -- <name> <password> [scanner|admin]
   hung shelf becomes a bin the WMS cannot find. Branch on `pairs.origin`, never
   on the `NEW-` prefix.
 - Scanner input must never be cached. Routes are `force-dynamic`.
+- **Printing is a queue the relay pulls; nothing pushes to the relay from
+  off its PC.** A TC52 cannot reach the relay's loopback, and Chrome refuses
+  an https page calling an http LAN address regardless. Screens POST to
+  `/api/print`; the relay polls `/api/print/next` for its one site with the key
+  from `settings.relay_key`. Do not bind the relay off `127.0.0.1` or add a
+  LAN push path - it will work on one laptop and nowhere else. `queueJobs`
+  checks every code against the site's stored `labels`, so the reprint rule
+  above holds from every screen; keep that check.
 - **`@zxing/*` is reached only through the dynamic import in
   `src/lib/camera.ts`.** It is the phone-camera fallback for browsers without
   `BarcodeDetector`. A static import anywhere would put a 450 KB decoder into

@@ -15,6 +15,12 @@
  * RAW is not optional on the Windows path: ZPL sent through a normal driver
  * prints the *text* of the ZPL, pages of it.
  *
+ * Two ways in. A browser on this PC can POST ZPL to /print directly. And,
+ * once connected to the web app with the relay key, this polls the app's
+ * print queue for its site and prints whatever is there - which is how a
+ * TC52, a phone or an MC92N0 in an aisle gets a label out of a printer they
+ * cannot see. Outbound https from this PC is the one path that always works.
+ *
  * CommonJS on purpose - Node's single-executable format takes a CJS entry, and
  * one file that both runs from source and packages into an .exe beats two that
  * drift apart. No dependencies.
@@ -71,6 +77,111 @@ const ALLOW = (arg('allow') || saved.allow || 'https://labelvalidation.vercel.ap
 
 const describe = () =>
   !target.mode ? 'nothing yet' : target.mode === 'network' ? `${target.host}:${target.port}` : `queue "${target.printer}"`
+
+/* ---------------- the web app's print queue ---------------- */
+
+const VERSION = '2'
+let link = {
+  app: arg('app') || saved.app || 'https://labelvalidation.vercel.app',
+  key: arg('key') || saved.key || '',
+  name: arg('name') || saved.name || os.hostname(),
+  site: Number(arg('site') || saved.site || 0),
+  siteName: saved.siteName || '',
+  // ZPL sent ahead of every job - ^XA^PW610^XZ for a printer that forgets its
+  // width at power-on, say. Per relay, because it is about this printer.
+  prefix: saved.prefix || '',
+}
+const persist = () => saveConfig({ ...target, ...link, listen: LISTEN, allow: ALLOW.join(',') })
+
+const queue = { state: 'off', detail: '', lastPoll: 0, lastWork: 0, printed: 0, lastJob: null }
+
+function appFetch(pathname, init = {}, use = link) {
+  const url = use.app.replace(/\/$/, '') + pathname
+  return fetch(url, {
+    ...init,
+    headers: { Authorization: 'Bearer ' + use.key, 'Content-Type': 'application/json', ...(init.headers || {}) },
+  })
+}
+
+/** Proves the address and key, and lists the sites to bind to. */
+async function checkApp(use = link) {
+  if (!use.app || !use.key) throw new Error('The app address and the relay key are both needed.')
+  let r
+  try {
+    r = await appFetch('/api/print/relay?relay=' + encodeURIComponent(use.name), {}, use)
+  } catch (e) {
+    throw new Error('Could not reach ' + use.app + ' - ' + e.message)
+  }
+  const d = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(d.error || 'The app returned ' + r.status)
+  return d
+}
+
+/** One poll: take the next job for this site, print it, report back. */
+async function pollOnce() {
+  const q =
+    '?relay=' + encodeURIComponent(link.name) + '&site=' + link.site +
+    '&target=' + encodeURIComponent(describe()) + '&v=' + VERSION
+  const r = await appFetch('/api/print/next' + q)
+  if (r.status === 204) return false
+  const job = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(job.error || 'The app returned ' + r.status)
+
+  let ok = true
+  let error = ''
+  try {
+    await send((link.prefix.trim() ? link.prefix.trim() + '\n' : '') + job.zpl)
+  } catch (e) {
+    ok = false
+    error = e.message
+  }
+  const labels = (job.codes || []).length
+  const copies = job.copies || 1
+  queue.lastJob = { id: job.id, ok, error, labels, at: Date.now() }
+  if (ok) {
+    queue.printed += labels * copies
+    console.log(`  job #${job.id}: ${labels} label(s) x${copies} -> ${describe()}`)
+  } else console.error(`  job #${job.id} FAILED: ${error}`)
+
+  const done = await appFetch('/api/print/' + job.id + '?relay=' + encodeURIComponent(link.name), {
+    method: 'POST',
+    body: JSON.stringify({ ok, error }),
+  })
+  if (!done.ok) console.error(`  could not report job #${job.id}: the app returned ` + done.status)
+  return true
+}
+
+let pollTimer = null
+async function pollLoop() {
+  clearTimeout(pollTimer)
+  let delay = 15000
+  if (!target.mode || !link.key || !link.site) {
+    queue.state = 'off'
+    queue.detail = !target.mode ? 'no printer chosen' : !link.key ? 'not connected to the app' : 'no site chosen'
+  } else {
+    try {
+      const had = await pollOnce()
+      if (queue.state !== 'ok')
+        console.log(`  queue: connected to ${link.app} as "${link.name}" for ${link.siteName || 'site ' + link.site}`)
+      queue.state = 'ok'
+      queue.detail = ''
+      queue.lastPoll = Date.now()
+      if (had) queue.lastWork = Date.now()
+      // Straight back for the next one while there is work; every couple of
+      // seconds for a while after; then gently, so an idle relay does not
+      // keep the database awake for nothing.
+      delay = had ? 200 : Date.now() - queue.lastWork < 120000 ? 2000 : 15000
+    } catch (e) {
+      if (queue.detail !== e.message) console.error('  queue: ' + e.message)
+      queue.state = 'error'
+      queue.detail = e.message
+      delay = 10000
+    }
+  }
+  pollTimer = setTimeout(pollLoop, delay)
+}
+
+const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
 /* ---------------- the two backends ---------------- */
 
@@ -201,8 +312,10 @@ const PAGE = printers => `<!doctype html>
 </style>
 <div class="card">
   <h1>Label print relay</h1>
-  <p>Leave this running while you print. The web app talks to it at
-     <span class="now">http://localhost:${LISTEN}</span>, and it passes labels to the printer.</p>
+  <p>Leave this running while you print. Connected to the web app below, it fetches
+     that site's labels itself - from a laptop, a TC52, a phone or the old handhelds.
+     A browser on this PC can also send to it directly at
+     <span class="now">http://localhost:${LISTEN}</span>.</p>
   <p>Printing to <span class="now" id="now">${describe()}</span></p>
 </div>
 <div class="card">
@@ -228,6 +341,30 @@ const PAGE = printers => `<!doctype html>
   <button id="save">Save and use this printer</button>
   <button class="ghost" id="test">Print a test label</button>
   <div class="msg" id="msg"></div>
+</div>
+<div class="card">
+  <h2>Connect to the web app</h2>
+  <p>The relay signs in with the key from the app's Admin tab, picks a site, and prints whatever
+     that site queues. Nothing on the floor has to reach this PC.</p>
+  <label>Web app address</label>
+  <input id="app" value="${esc(link.app)}" placeholder="https://labelvalidation.vercel.app">
+  <label>Relay key <span style="font-weight:normal;text-transform:none">(Admin tab &rarr; Print relays)</span></label>
+  <input id="key" value="${esc(link.key)}" placeholder="lvr_…" autocomplete="off" spellcheck="false">
+  <div class="row">
+    <div><label>This relay's name</label><input id="name" value="${esc(link.name)}"></div>
+    <div><label>Site</label>
+      <select id="site">${
+        link.site
+          ? `<option value="${link.site}" selected>${esc(link.siteName || 'site ' + link.site)}</option>`
+          : '<option value="">check the connection first</option>'
+      }</select></div>
+  </div>
+  <label>ZPL sent before every job <span style="font-weight:normal;text-transform:none">(optional - e.g. ^XA^PW610^XZ for a printer that forgets its width)</span></label>
+  <input id="prefix" value="${esc(link.prefix)}" spellcheck="false">
+  <button class="ghost" id="check">Check connection</button>
+  <button id="connect">Save and print for this site</button>
+  <div class="msg" id="qmsg"></div>
+  <p id="qstat" style="margin-top:12px;font-weight:600"></p>
 </div>
 <div class="card">
   <h2>Stop</h2>
@@ -264,6 +401,46 @@ const PAGE = printers => `<!doctype html>
    const d = await r.json()
    say(r.ok ? 'ok' : 'bad', r.ok ? 'Sent. A label should come out.' : (d.error || 'Failed.'))
  }
+
+ const qsay = (k, t) => { $('qmsg').className = 'msg ' + k; $('qmsg').textContent = t }
+ const linkBody = () => ({
+   app: $('app').value.trim(), key: $('key').value.trim(), name: $('name').value.trim(),
+   site: Number($('site').value), prefix: $('prefix').value,
+ })
+ const post = async (u, b) => {
+   const r = await fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) })
+   return [r.ok, await r.json().catch(() => ({}))]
+ }
+ $('check').onclick = async () => {
+   qsay('ok', 'Checking…')
+   const [ok, d] = await post('/app/check', linkBody())
+   if (!ok) return qsay('bad', d.error || 'Could not connect.')
+   const cur = Number($('site').value)
+   $('site').innerHTML = d.sites.length
+     ? d.sites.map(s => '<option value="' + s.id + '"' + (s.id === cur ? ' selected' : '') + '>' + s.name + '</option>').join('')
+     : '<option value="">the app has no sites yet</option>'
+   qsay('ok', 'Connected. Pick the site, then save.')
+ }
+ $('connect').onclick = async () => {
+   qsay('ok', 'Saving…')
+   const [ok, d] = await post('/app', linkBody())
+   qsay(ok ? 'ok' : 'bad', ok ? 'Printing for ' + d.site + '. Leave this running.' : (d.error || 'Could not save.'))
+ }
+ const ago = t => (t ? Math.round((Date.now() - t) / 1000) + 's ago' : 'never')
+ async function refreshStatus() {
+   try {
+     const s = await (await fetch('/status')).json()
+     const q = s.queue
+     let t =
+       q.state === 'ok' ? 'Queue: printing for ' + (q.siteName || 'site ' + q.site) + ' as "' + q.name + '" · polled ' + ago(q.lastPoll) + ' · ' + q.printed + ' label(s) this session'
+       : q.state === 'error' ? 'Queue: ' + q.detail
+       : 'Queue: not running - ' + q.detail
+     if (q.lastJob) t += ' · last job #' + q.lastJob.id + (q.lastJob.ok ? ' printed' : ' FAILED: ' + q.lastJob.error)
+     $('qstat').textContent = t
+     $('qstat').style.color = q.state === 'ok' ? 'var(--ok)' : q.state === 'error' ? 'var(--bad)' : 'var(--muted)'
+   } catch (e) {}
+ }
+ refreshStatus(); setInterval(refreshStatus, 3000)
 </script>`
 
 // A label that proves the path end to end without needing the web app.
@@ -327,6 +504,14 @@ const server = http.createServer(async (req, res) => {
         target: describe(),
         mode: target.mode,
         configured: Boolean(target.mode),
+        queue: {
+          ...queue,
+          app: link.app,
+          name: link.name,
+          site: link.site,
+          siteName: link.siteName,
+          connected: Boolean(link.key && link.site),
+        },
       })
     }
 
@@ -346,9 +531,40 @@ const server = http.createServer(async (req, res) => {
         port: Number(body.port) || 9100,
         printer: String(body.printer || ''),
       }
-      saveConfig({ ...target, listen: LISTEN, allow: ALLOW.join(',') })
+      persist()
       console.log('  printer set to ' + describe())
+      void pollLoop()
       return void json(res, 200, { ok: true, target: describe() })
+    }
+
+    // The web app link. /app/check proves the address and key and lists the
+    // sites; /app saves the lot and starts polling. A link that does not work
+    // is refused rather than saved - a relay that silently prints nothing is
+    // worse than one that says why.
+    if (req.method === 'POST' && (url === '/app/check' || url === '/app')) {
+      const body = JSON.parse((await readBody(req, 64 * 1024)) || '{}')
+      const use = {
+        app: String(body.app || '').trim().replace(/\/$/, ''),
+        key: String(body.key || '').trim(),
+        name: String(body.name || '').trim().slice(0, 40) || os.hostname(),
+      }
+      let d
+      try {
+        d = await checkApp(use)
+      } catch (e) {
+        return void json(res, 400, { error: e.message })
+      }
+      if (url === '/app/check') return void json(res, 200, { ok: true, sites: d.sites, name: d.name })
+      const site = Number(body.site)
+      const found = (d.sites || []).find(s => s.id === site)
+      if (!found) return void json(res, 400, { error: 'Pick a site for this relay to print for.' })
+      link = { app: use.app, key: use.key, name: use.name, site, siteName: found.name, prefix: String(body.prefix || '') }
+      persist()
+      console.log(`  connected to ${link.app} as "${link.name}" for ${link.siteName}`)
+      queue.state = 'off'
+      queue.detail = ''
+      void pollLoop()
+      return void json(res, 200, { ok: true, site: found.name })
     }
 
     if (req.method === 'POST' && (url === '/print' || url === '/test')) {
@@ -386,7 +602,10 @@ server.listen(LISTEN, '127.0.0.1', () => {
   console.log('  setup page  ' + url)
   console.log('  printing to ' + describe())
   console.log('  accepting   ' + ALLOW.join(', '))
+  if (link.key && link.site) console.log(`  queue       ${link.app} as "${link.name}" for ${link.siteName || 'site ' + link.site}`)
+  else console.log('  queue       not connected - open the setup page to connect to the web app')
   console.log('')
+  void pollLoop()
   console.log('  Close the app window to stop, or press Ctrl-C here.')
   if (!argv.includes('--no-window')) openWindow(url)
 })

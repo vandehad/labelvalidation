@@ -7,6 +7,7 @@
  * scanning the same shelf at the same time cannot both succeed.
  */
 import { neon } from '@neondatabase/serverless'
+import { randomUUID } from 'node:crypto'
 import { requireDatabaseUrl } from './env.mjs'
 
 // --print emits the SQL and stops, without needing a connection string at all.
@@ -114,6 +115,49 @@ const steps = [
   ['labels.hung_at', `ALTER TABLE labels ADD COLUMN IF NOT EXISTS hung_at timestamptz`],
   ['labels.minted_by', `ALTER TABLE labels ADD COLUMN IF NOT EXISTS minted_by integer REFERENCES users(id)`],
   ['minted labels by site', `CREATE INDEX IF NOT EXISTS labels_origin_idx ON labels (site_id, origin)`],
+
+  // ---- the print queue -------------------------------------------------
+  // Screens queue; the relay on the PC with the printer polls and prints.
+  // That is the only direction that works from a handheld: nothing on the
+  // floor can reach that PC, but that PC can always reach the app.
+  [
+    'settings',
+    `CREATE TABLE IF NOT EXISTS settings (
+      key        text PRIMARY KEY,
+      value      text NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`,
+  ],
+  [
+    'relays',
+    `CREATE TABLE IF NOT EXISTS relays (
+      name      text PRIMARY KEY,
+      site_id   integer REFERENCES sites(id) ON DELETE SET NULL,
+      target    text,
+      version   text,
+      printed   integer NOT NULL DEFAULT 0,
+      last_seen timestamptz NOT NULL DEFAULT now()
+    )`,
+  ],
+  [
+    'print_jobs',
+    `CREATE TABLE IF NOT EXISTS print_jobs (
+      id         serial PRIMARY KEY,
+      site_id    integer NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+      codes      text[] NOT NULL,
+      copies     integer NOT NULL DEFAULT 1,
+      zpl        text NOT NULL,
+      relay      text,
+      status     text NOT NULL DEFAULT 'queued',
+      error      text,
+      user_id    integer REFERENCES users(id),
+      created_at timestamptz NOT NULL DEFAULT now(),
+      claimed_at timestamptz,
+      claimed_by text,
+      done_at    timestamptz
+    )`,
+  ],
+  ['print_jobs by site', `CREATE INDEX IF NOT EXISTS print_jobs_site_idx ON print_jobs (site_id, status, id)`],
 ]
 
 if (printOnly) {
@@ -134,6 +178,12 @@ for (const [name, ddl] of steps) {
   await sql.query(ddl)
   console.log('  ok  ' + name)
 }
+
+// The key a relay signs in with. Made once; the Admin tab shows it and can
+// replace it. ON CONFLICT so re-running never rotates it by accident.
+const key = 'lvr_' + randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '').slice(0, 16)
+await sql`INSERT INTO settings (key, value) VALUES ('relay_key', ${key}) ON CONFLICT (key) DO NOTHING`
+console.log('  ok  relay key (Admin tab -> Print relays)')
 
 const [{ count }] = await sql`SELECT count(*)::int AS count FROM users`
 console.log(`\nSchema ready. ${count} user(s) exist.`)
