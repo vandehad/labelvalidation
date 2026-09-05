@@ -552,6 +552,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       camOld.current = text
       setOldBin(text)
       setNewBin('')
+      setResult(null) // the last verdict has been seen; the band goes back to instructions
       feedback(true)
       return
     }
@@ -748,11 +749,17 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           {/* One band along the bottom edge - the part of the picture that
               stays on screen. It says what to scan; the verdict replaces it
               when a pair commits; the next old label read brings it back. */}
-          {result && camStep === 'old' ? (
+          {result ? (
             <div className={`m-cam-verdict ${result.verdict}`}>
               <b>{result.text}</b>
               {result.sub && <span>{result.sub}</span>}
-              <i>{result.verdict === 'match' ? 'Next: point at the OLD label' : 'Try again: point at the OLD label'}</i>
+              <i>
+                {camStep === 'new'
+                  ? 'Now point at the label hung on it'
+                  : result.verdict === 'match'
+                    ? 'Next: point at the OLD label'
+                    : 'Try again: point at the OLD label'}
+              </i>
             </div>
           ) : (
             <div className="m-cam-verdict hint">
