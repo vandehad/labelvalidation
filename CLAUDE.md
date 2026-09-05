@@ -58,6 +58,11 @@ npm run user -- <name> <password> [scanner|admin]
 - **`generateLabels` reports what it could not honour.** Overlapping zone
   blocks would otherwise be swallowed by `UNIQUE (site_id, code)` without a
   word. `problems` carries them out to the caller; do not drop it.
+- **`/wm` is the Windows Mobile route and takes no JavaScript.** IE Mobile on
+  an MC92N0 has no `fetch`, no ES6, no flexbox, and React will not run. It is
+  HTML 4.01 with table layout, and **one input per page** - a wedge sends the
+  scan then Enter, and Enter in a form with two text inputs submits early or
+  not at all depending on the browser. Do not add a second field to those forms.
 - **`/scan` is the handheld page and is a separate route on purpose.** Not a
   breakpoint on the desktop tab - the two are different tools. Its fields carry
   `inputMode="none"`: DataWedge types a scan in as keystrokes, and Android must
