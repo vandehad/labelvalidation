@@ -745,14 +745,20 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           <video ref={videoRef} autoPlay muted playsInline />
           {/* The verdict block above scrolls off the top while the phone is
               held up to a shelf, so the answer is painted on the picture too. */}
-          {result && (
+          {/* One band along the bottom edge - the part of the picture that
+              stays on screen. It says what to scan; the verdict replaces it
+              when a pair commits; the next old label read brings it back. */}
+          {result && camStep === 'old' ? (
             <div className={`m-cam-verdict ${result.verdict}`}>
               <b>{result.text}</b>
               {result.sub && <span>{result.sub}</span>}
             </div>
+          ) : (
+            <div className="m-cam-verdict hint">
+              <b>{camStep === 'old' ? 'Point at the OLD label' : 'Now the label hung on it'}</b>
+            </div>
           )}
           <div className="m-cam-guide" />
-          <div className="m-cam-hint">{camStep === 'old' ? 'Point at the OLD label' : 'Now the label hung on it'}</div>
         </div>
       )}
       {camMsg && <div className="m-verdict error" style={{ minHeight: 0 }}><span className="m-sub">{camMsg}</span></div>}

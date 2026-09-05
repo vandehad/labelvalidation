@@ -152,6 +152,7 @@ select.site{font-weight:700}
 .m-cam-verdict.match{background:rgba(27,127,75,.88)}
 .m-cam-verdict.mismatch,.m-cam-verdict.error{background:rgba(163,32,32,.92)}
 .m-cam-verdict.unmapped{background:rgba(138,97,0,.92)}
+.m-cam-verdict.hint{background:rgba(0,0,0,.55);text-align:center}
 .m-cam-hint{position:absolute;left:0;right:0;top:8px;text-align:center;color:#fff;font-weight:800;
   font-size:16px;text-shadow:0 1px 4px #000;pointer-events:none}
 
