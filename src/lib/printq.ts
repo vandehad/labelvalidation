@@ -193,10 +193,16 @@ export async function queueJobs(sql: Sql, input: QueueInput): Promise<Job[]> {
       422,
     )
 
+  // Rendered here for the screens that have no Print card: the site format,
+  // at the stock the site's Print card chose. The width rides in every label.
+  const siteRows = (await sql`SELECT label_width FROM sites WHERE id = ${input.siteId}`) as Array<{ label_width: number }>
+  if (!siteRows[0]) throw new QueueRefused('No such site.', 404)
+  const widthIn = Number(siteRows[0].label_width) === 3 ? 3 : 4
+
   const relay = input.relay ? relayName(input.relay) : null
   const jobs: Job[] = []
   for (const codes of chunks) {
-    const zpl = input.zpl ?? zplBatch(codes, { ...DEFAULT_LABEL, copies })
+    const zpl = input.zpl ?? zplBatch(codes, { ...DEFAULT_LABEL, widthIn, copies })
     const rows = (await sql`
       INSERT INTO print_jobs (site_id, codes, copies, zpl, relay, user_id)
       VALUES (${input.siteId}, ${codes}, ${copies}, ${zpl}, ${relay}, ${input.userId})

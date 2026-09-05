@@ -24,6 +24,7 @@ import { pickDatabaseUrl } from '../src/lib/dburl.mjs'
 import {
   zplLabel,
   zplBatch,
+  printWidth,
   DEFAULT_LABEL,
   RESTORE,
   code128Modules,
@@ -349,19 +350,28 @@ const SAMPLE = [
   '^XA^LH0000,0000^FS^PON^FS',
   '^ISLB,N^FS^XZ',
   '^XA^MCY^XZ^XA^ILLB^FS',
+  '^PW832',
   '^FO0000,0000^AAN,0000,0000^FD ^FS',
   '^FO0038,0084^BY03,3,100^B3N,N,0100,N,N^FDA     A2707G05^FS',
   '^FO0038,0012^A0N,0084,0098^FDA27-07G05^FS',
   '^PQ0001,0000,0000,N^FS^MCY^XZ',
 ].join('\n')
 
-ok('reproduces the site format exactly', zplLabel('A2707G05') === SAMPLE)
+ok('reproduces the site format, plus the width on the label', zplLabel('A2707G05') === SAMPLE)
 // The one addition to their file. ^PW and ^LL persist on the printer and this
 // format sends neither, so without recalling the saved configuration a single
 // 3x1 run leaves every later label clipped to 609 dots - and switching the
 // setting back does nothing, because there is nothing in the format to undo it.
 ok('recalls the saved configuration first', zplLabel('A2707G05').split('\n')[1] === '^XA^JUR^XZ')
-ok('no ^PW or ^LL - the printer stock decides', !zplLabel('A2707G05').includes('^PW'))
+// The width is stated on every label, from the stock chosen on the Print
+// card: 4 x 1 says 832, 3 x 1 says 609. Inside the label, after ^JUR, so the
+// restore cannot undo it - that is what survived the ZQ630's power cycles.
+ok('4in stock states the full 832-dot head on the label', zplLabel('A2707G05').includes('\n^PW832\n'))
+ok('3in stock states 609', zplLabel('A2707G05', { ...DEFAULT_LABEL, widthIn: 3 }).includes('\n^PW609\n'))
+ok('the width comes after ^JUR, so the restore cannot undo it', zplLabel('A2707G05').indexOf('^PW832') > zplLabel('A2707G05').indexOf('^XA^JUR^XZ'))
+ok('and after ^ILLB, so the stored format cannot either', zplLabel('A2707G05').indexOf('^PW832') > zplLabel('A2707G05').indexOf('^ILLB'))
+ok('still no ^LL - the gap sensor decides length', !zplLabel('A2707G05').includes('^LL'))
+ok('printWidth: 4 -> 832, 3 -> 609, a 300dpi head is arithmetic', printWidth(4) === 832 && printWidth(3) === 609 && printWidth(4, 300) === 1200)
 // Their file opens with ~CC¬, which switches the format prefix and leaves it
 // switched. Without resetting it, a plain ^XA after their program has run is
 // ignored by the printer.
@@ -392,6 +402,8 @@ ok('zbatch sends the preamble once', (zbatch.match(/\^IDR:\*\.GRF/g) ?? []).leng
 ok('zbatch has one body per label', (zbatch.match(/\^ILLB/g) ?? []).length === 3)
 ok('zbatch pads every barcode', (zbatch.match(/\^FDA {5}A0101/g) ?? []).length === 3)
 ok('zbatch keeps every dashed line', zbatch.includes('^FDA01-01A01^FS'))
+ok('zbatch states the width on every label', (zbatch.match(/\^PW832/g) ?? []).length === 3)
+ok('a 3in batch states 609 on every label', (zplBatch(['A0101A01', 'A0101B01'], { ...DEFAULT_LABEL, widthIn: 3 }).match(/\^PW609/g) ?? []).length === 2)
 
 /* ---------- what a scanner hands back ---------- */
 // The label encodes `A     A0101B01`, so the gun returns all fourteen
@@ -414,15 +426,16 @@ ok(
 )
 
 /* ---------- zpl: laid out against other stock ---------- */
-// The site format has no ^PW/^LL and its dot values suit its own stock. For
-// anything else the same design is measured out against the label size.
+// The site format's dot values suit its own stock. For anything else the
+// same design is measured out against the label size.
 const SCALED = { ...DEFAULT_LABEL, template: 'scaled' as const }
 const z = zplLabel('A0102C01', SCALED)
 ok('scaled is one label', (z.match(/\^XA/g) ?? []).length === 1 && z.trim().endsWith('^XZ'))
 // ^PW but no ^LL. Length is 1in on every stock, only the width changes, and
 // the printer's gap sensor measures length better than we can declare it -
 // asserting 220 against its calibrated 218 is how registration drifts.
-ok('scaled states the width', z.includes('^PW812'))
+ok('scaled states the width the same way - 4in is the 832-dot head', z.includes('^PW832'))
+ok('scaled 3in states 609', zplLabel('A0102C01', { ...SCALED, widthIn: 3 }).includes('^PW609'))
 ok('scaled leaves length to the calibration', !z.includes('^LL'))
 const barField = /\^B[3C]N[^^]*\^FD([^^]*)\^FS/.exec(z)?.[1]
 ok('barcode field is the zone field then the code', barField === 'A     A0102C01')

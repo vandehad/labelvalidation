@@ -10,7 +10,7 @@ export async function GET() {
     await requireUser()
     const sql = db()
     const sites = await sql`
-      SELECT s.id, s.name, s.status,
+      SELECT s.id, s.name, s.status, s.label_width,
              (SELECT count(*)::int FROM labels l WHERE l.site_id = s.id) AS labels,
              (SELECT count(*)::int FROM pairs  p WHERE p.site_id = s.id) AS pairs
       FROM sites s ORDER BY s.created_at DESC`

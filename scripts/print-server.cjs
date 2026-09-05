@@ -87,12 +87,6 @@ let link = {
   name: arg('name') || saved.name || os.hostname(),
   site: Number(arg('site') || saved.site || 0),
   siteName: saved.siteName || '',
-  // Label width in dots, forced into every label. The ZQ630 forgets its
-  // width at every power-on and nothing makes it keep one; ^PW in each label
-  // is what worked. Per relay, because it is about this printer.
-  // 4in stock is 832 dots, 3in is 609. Always sent; there is no "printer's
-  // own setting", because the printer's own setting is the thing that drifts.
-  width: Number(arg('width') || saved.width) === 609 ? 609 : 832,
 }
 const persist = () => saveConfig({ ...target, ...link, listen: LISTEN, allow: ALLOW.join(',') })
 
@@ -133,6 +127,8 @@ async function pollOnce() {
   let ok = true
   let error = ''
   try {
+    // Sent as-is. The width is inside every label already - the Print card's
+    // stock choice put it there - so this has nothing to add.
     await send(job.zpl)
   } catch (e) {
     ok = false
@@ -290,18 +286,7 @@ async function listPrinters() {
   }
 }
 
-/**
- * Stamp the width into every format block. Inside each ^XA, not ahead of the
- * job: the site preamble carries ^JUR, which restores the printer's saved
- * configuration and would undo a ^PW sent before it. Every label carrying
- * its own ^PW is what survived the ZQ630's power cycles.
- */
-const forceWidth = (zpl, dots) => zpl.replace(/\^XA/g, '^XA^PW' + dots)
-
-const send = zpl => {
-  const out = forceWidth(zpl, link.width)
-  return target.mode === 'network' ? sendTcp(out) : sendWindowsRaw(out)
-}
+const send = zpl => (target.mode === 'network' ? sendTcp(zpl) : sendWindowsRaw(zpl))
 
 /* ---------------- setup page ---------------- */
 
@@ -373,13 +358,6 @@ const PAGE = printers => `<!doctype html>
           : '<option value="">check the connection first</option>'
       }</select></div>
   </div>
-  <label>Label stock in this printer</label>
-  <select id="width">
-    <option value="832"${link.width !== 609 ? ' selected' : ''}>4 inch wide - sends ^PW832 with every label</option>
-    <option value="609"${link.width === 609 ? ' selected' : ''}>3 inch wide - sends ^PW609 with every label</option>
-  </select>
-  <p style="margin-top:10px">Stamped into every label, so a printer that forgets its width at power-on still
-     prints to the stock it has loaded.</p>
   <button class="ghost" id="check">Check connection</button>
   <button id="connect">Save and print for this site</button>
   <div class="msg" id="qmsg"></div>
@@ -425,7 +403,6 @@ const PAGE = printers => `<!doctype html>
  const linkBody = () => ({
    app: $('app').value.trim(), key: $('key').value.trim(), name: $('name').value.trim(),
    site: Number($('site').value),
-   width: Number($('width').value),
  })
  const post = async (u, b) => {
    const r = await fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) })
@@ -530,7 +507,6 @@ const server = http.createServer(async (req, res) => {
           name: link.name,
           site: link.site,
           siteName: link.siteName,
-          width: link.width,
           connected: Boolean(link.key && link.site),
         },
       })
@@ -579,10 +555,9 @@ const server = http.createServer(async (req, res) => {
       const site = Number(body.site)
       const found = (d.sites || []).find(s => s.id === site)
       if (!found) return void json(res, 400, { error: 'Pick a site for this relay to print for.' })
-      const width = Number(body.width) === 609 ? 609 : 832
-      link = { app: use.app, key: use.key, name: use.name, site, siteName: found.name, width }
+      link = { app: use.app, key: use.key, name: use.name, site, siteName: found.name }
       persist()
-      console.log(`  connected to ${link.app} as "${link.name}" for ${link.siteName}, ^PW${width} on every label`)
+      console.log(`  connected to ${link.app} as "${link.name}" for ${link.siteName}`)
       queue.state = 'off'
       queue.detail = ''
       void pollLoop()
@@ -622,7 +597,7 @@ server.listen(LISTEN, '127.0.0.1', () => {
   console.log('  Label print relay')
   console.log('  ' + '-'.repeat(40))
   console.log('  setup page  ' + url)
-  console.log('  printing to ' + describe() + ` with ^PW${link.width} on every label`)
+  console.log('  printing to ' + describe())
   console.log('  accepting   ' + ALLOW.join(', '))
   if (link.key && link.site) console.log(`  queue       ${link.app} as "${link.name}" for ${link.siteName || 'site ' + link.site}`)
   else console.log('  queue       not connected - open the setup page to connect to the web app')

@@ -835,6 +835,26 @@ function Print({ siteId }: { siteId: number }) {
   // and lets the printer's own stock settings stand; the other two measure the
   // same design out against the label they are given.
   const [stock, setStock] = useState<'site' | '4' | '3'>('site')
+
+  // The stock is the site's, not this browser's: a bin added from a TC52 is
+  // rendered on the server against it. Loaded once, saved whenever it changes.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const d = await api('/api/sites')
+        const s = (d.sites as Array<{ id: number; label_width?: number }>).find(x => x.id === siteId)
+        if (Number(s?.label_width) === 3) setStock('3')
+      } catch {
+        /* the default stands */
+      }
+    })()
+  }, [siteId])
+  const chooseStock = (v: 'site' | '4' | '3') => {
+    setStock(v)
+    void api(`/api/sites/${siteId}`, { method: 'PATCH', body: JSON.stringify({ labelWidth: v === '3' ? 3 : 4 }) }).catch(
+      () => {},
+    )
+  }
   // Media that does not sit where the head expects it. 203 dots to the inch,
   // so 1/16in is 13 and 1/8in is 25; negative moves the printing left.
   const [nudge, setNudge] = useState('0')
@@ -1039,7 +1059,7 @@ function Print({ siteId }: { siteId: number }) {
       <div className="row">
         <div>
           <label>Label stock</label>
-          <select value={stock} onChange={e => setStock(e.target.value as 'site' | '4' | '3')}>
+          <select value={stock} onChange={e => chooseStock(e.target.value as 'site' | '4' | '3')}>
             <option value="site">4 x 1 in — the site format, exactly</option>
             <option value="4">4 x 1 in — scaled to fill the label</option>
             <option value="3">3 x 1 in</option>
@@ -1278,10 +1298,11 @@ function Print({ siteId }: { siteId: number }) {
 
       <p className="hint" style={{ marginTop: 10 }}>
         {stock === 'site'
-          ? 'Emits the ZPL the site already prints with, command for command, and inherits whatever stock the printer is set to.'
+          ? 'Emits the ZPL the site already prints with, command for command, with ^PW832 on every label so the printer is told the stock.'
           : stock === '4'
-            ? 'The same design measured against a 4 x 1 in label, so the line and bars fill it rather than stopping two thirds across.'
-            : 'Measured against a 3 x 1 in label. The barcode drops a module width to fit, which is the most that will go on that stock.'}
+            ? 'The same design measured against a 4 x 1 in label, so the line and bars fill it rather than stopping two thirds across. ^PW832 on every label.'
+            : 'Measured against a 3 x 1 in label. The barcode drops a module width to fit, which is the most that will go on that stock. ^PW609 on every label.'}
+        {' '}This choice is remembered for the site: a bin added from a handheld prints at the same width.
       </p>
 
       {selected.length > 0 && (

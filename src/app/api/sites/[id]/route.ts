@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { requireAdmin } from '@/lib/auth'
+import { requireAdmin, requireUser } from '@/lib/auth'
 import { json, fail } from '@/lib/api'
 
 export const dynamic = 'force-dynamic'
@@ -78,6 +78,25 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
     }
 
     return json({ ok: true, site: site[0].name, cleared })
+  } catch (e) {
+    return fail(e)
+  }
+}
+
+/**
+ * The label stock in this site's printer, 4 or 3 inches. Chosen on the Print
+ * card and read by every screen that prints, so a bin added from a TC52 comes
+ * out at the same width as the run it joins.
+ */
+export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    await requireUser()
+    const siteId = Number((await ctx.params).id)
+    const body = (await req.json()) as { labelWidth?: number }
+    const w = Number(body.labelWidth) === 3 ? 3 : 4
+    const rows = await db()`UPDATE sites SET label_width = ${w} WHERE id = ${siteId} RETURNING id, label_width`
+    if (!rows.length) return json({ error: 'No such site.' }, 404)
+    return json({ site: rows[0] })
   } catch (e) {
     return fail(e)
   }

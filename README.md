@@ -177,14 +177,14 @@ idle. A job it fails on — printer off, cable out — is reported back with the
 reason and can be retried from the Print card. A relay that dies mid-job loses
 nothing: after three minutes the job goes back in the queue.
 
-The relay is also told the **label stock in its printer**: 4 inch sends
-`^PW832` with every label, 3 inch sends `^PW609`. It is stamped into every
-label's `^XA` block — inside each label, not ahead of the job, because the
-site preamble's `^JUR` restores the saved configuration and would undo
-anything sent before it. That is what survived the ZQ630's power cycles, which
-reset its width every time and cannot be made not to. It is per relay because
-it is about that printer, and it applies to the direct path and the test label
-too.
+The relay has no settings about the labels themselves. The **label stock**
+choice on the Print card is the only input: 4 x 1 puts `^PW832` inside every
+label, 3 x 1 puts `^PW609`. Inside each label rather than ahead of the job,
+because the site preamble's `^JUR` restores the saved configuration and would
+undo anything sent before it — that is what survived the ZQ630's power
+cycles, and it is universal, so a ZT411 or GX420d is told the same way. The
+choice is remembered per site, so a bin added from a handheld prints at the
+same width as the run it joins.
 
 Day to day:
 

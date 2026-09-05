@@ -114,6 +114,10 @@ const steps = [
   ['labels.printed_at', `ALTER TABLE labels ADD COLUMN IF NOT EXISTS printed_at timestamptz`],
   ['labels.hung_at', `ALTER TABLE labels ADD COLUMN IF NOT EXISTS hung_at timestamptz`],
   ['labels.minted_by', `ALTER TABLE labels ADD COLUMN IF NOT EXISTS minted_by integer REFERENCES users(id)`],
+  // The label stock in the site's printer, in inches: chosen once on the
+  // Print card, read by every screen that prints - the handheld and /wm
+  // render their labels on the server against it.
+  ['sites.label_width', `ALTER TABLE sites ADD COLUMN IF NOT EXISTS label_width integer NOT NULL DEFAULT 4`],
   ['minted labels by site', `CREATE INDEX IF NOT EXISTS labels_origin_idx ON labels (site_id, origin)`],
 
   // ---- the print queue -------------------------------------------------

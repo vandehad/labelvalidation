@@ -122,9 +122,10 @@ export const DEFAULT_LABEL: LabelSpec = {
  * 4ips, the two ^IDR lines clear stored graphics, and ^ISLB saves the empty
  * format that every label then loads with ^ILLB.
  *
- * There is deliberately no ^PW or ^LL: the format inherits whatever stock the
- * printer is configured for, which is how the existing labels are produced and
- * why copying its dot values onto different stock came out wrong.
+ * The preamble carries no ^PW or ^LL. Each label body does carry ^PW - see
+ * `printWidth` - because the ZQ630 resets its width at every power-on and
+ * nothing makes it keep one, so the label has to say. No ^LL still: the gap
+ * sensor measures length better than we can declare it.
  *
  * The barcode field carries a six-character zone field before the code, as the
  * site's own labels do - see `barcodeData`.
@@ -174,12 +175,34 @@ export function barcodeData(code: string): string {
 
 const pad4 = (n: number) => String(Math.max(1, Math.floor(n))).padStart(4, '0')
 
-function sampleBody(code: string, shown: string, copies: number, offsetX = 0): string {
+/**
+ * ^PW for the stock, sent with every label whichever template is in use.
+ *
+ * The ZQ630 resets its print width at every power-on; `^JUS`, SGD setvar and
+ * the config tool were all tried and none of them stuck. A ^PW ahead of the
+ * job does not survive either, because the preamble's ^JUR restores the saved
+ * configuration. Inside each label is the one place it holds - and it is
+ * universal, so the ZT411 and GX420d get told the same way.
+ *
+ * 4in stock is the full 832-dot head; 3in is 609. The Print card's stock
+ * choice is the only input: pick 4 x 1 and every label says 4, pick 3 x 1 and
+ * every label says 3.
+ */
+export function printWidth(widthIn: number, dpi = 203): number {
+  if (dpi !== 203) return Math.round(widthIn * dpi)
+  if (widthIn >= 3.9) return 832
+  if (widthIn >= 2.9) return 609
+  return Math.round(widthIn * dpi)
+}
+
+function sampleBody(code: string, shown: string, copies: number, offsetX = 0, pw = 832): string {
   // The site's own origin is x=38. A media correction moves both fields
   // together, so the design is untouched and only where it lands changes.
   const x = String(Math.max(0, 38 + Math.round(offsetX))).padStart(4, '0')
   return [
     '^XA^MCY^XZ^XA^ILLB^FS',
+    // After ^ILLB, so the stored format cannot override it.
+    `^PW${pw}`,
     '^FO0000,0000^AAN,0000,0000^FD ^FS',
     `^FO${x},0084^BY03,3,100^B3N,N,0100,N,N^FD${barcodeData(code)}^FS`,
     `^FO${x},0012^A0N,0084,0098^FD${shown}^FS`,
@@ -245,7 +268,7 @@ export function zplLabel(code: string, spec: LabelSpec = DEFAULT_LABEL): string 
   const shown = displayCode(c, spec.separator ?? '-')
 
   if ((spec.template ?? 'sample') === 'sample') {
-    return `${SAMPLE_PREAMBLE}\n${sampleBody(esc(c), esc(shown), spec.copies, spec.offsetX ?? 0)}`
+    return `${SAMPLE_PREAMBLE}\n${sampleBody(esc(c), esc(shown), spec.copies, spec.offsetX ?? 0, printWidth(spec.widthIn, spec.dpi))}`
   }
 
   const w = Math.round(spec.widthIn * spec.dpi)
@@ -287,8 +310,7 @@ export function zplLabel(code: string, spec: LabelSpec = DEFAULT_LABEL): string 
   const barH = Math.round(h * 0.493)
 
   // Grow the line to fill the stock rather than pinning it to the sample's
-  // dot values. The sample carries no ^PW or ^LL, so it inherits whatever
-  // width the printer is set to - its 84x98 fills a 3in label, and the same
+  // dot values. Those suit one width: 84x98 fills a 3in label, and the same
   // numbers on 4in stock leave a third of the label empty. Fed 3in stock this
   // arrives back at 84x98 on its own.
   // Font 0 is proportional: the width parameter caps a glyph, it is not the
@@ -326,7 +348,7 @@ export function zplLabel(code: string, spec: LabelSpec = DEFAULT_LABEL): string 
 
   return [
     '^XA',
-    `^PW${w}`, // print width - the one thing that differs between 3in and 4in
+    `^PW${printWidth(spec.widthIn, spec.dpi)}`, // the stock, stated on every label - see printWidth
     // No ^LL. Length is 1in on every stock here, only the width changes, and
     // the printer's own gap sensor measures it better than we can declare it -
     // it calibrated to 218 where this was asserting 220. Declaring a length
@@ -358,7 +380,7 @@ export function zplBatch(codes: string[], spec: LabelSpec = DEFAULT_LABEL): stri
   if ((spec.template ?? 'sample') === 'sample') {
     const bodies = codes.map(c => {
       const u = String(c ?? '').trim().toUpperCase()
-      return sampleBody(esc(u), esc(displayCode(u, spec.separator ?? '-')), spec.copies, spec.offsetX ?? 0)
+      return sampleBody(esc(u), esc(displayCode(u, spec.separator ?? '-')), spec.copies, spec.offsetX ?? 0, printWidth(spec.widthIn, spec.dpi))
     })
     return [SAMPLE_PREAMBLE, ...bodies].join('\n') + '\n'
   }
