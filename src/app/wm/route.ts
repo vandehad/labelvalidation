@@ -69,8 +69,16 @@ a{color:#1f4e79}
 </head><body>
 ${body}
 <script type="text/javascript">
-/* ES3 only. Puts the cursor in the scan field; harmless if it does nothing. */
-try { document.forms[0].elements[0].focus(); } catch (e) { }
+/* ES3 only. Puts the cursor in the scan field so the next trigger pull lands
+   there without a tap. The first element of every form here is a hidden
+   field, which cannot take focus - so walk to the first text input. Harmless
+   if the browser ignores it. */
+try {
+  var f = document.forms[0];
+  for (var i = 0; i < f.elements.length; i++) {
+    if (f.elements[i].type == 'text' || f.elements[i].type == 'password') { f.elements[i].focus(); break; }
+  }
+} catch (e) { }
 </script>
 </body></html>`
   return new Response(html, {

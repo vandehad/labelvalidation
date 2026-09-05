@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { normalizeScan, type Verdict } from '@/lib/bins'
+import { normalizeScan, reversedScan, type Verdict } from '@/lib/bins'
 
 /**
  * Validation on a handheld - built for a Zebra TC52 in a warehouse aisle.
@@ -180,6 +180,18 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       feedback(false)
       setNewBin('')
       newRef.current?.focus()
+      return
+    }
+    // Backwards: a new-style code in the old field. The fault is in the old
+    // field, so the cursor goes back there - the next trigger pull should be
+    // the shelf's existing label, not another attempt at the new one.
+    const backwards = reversedScan(o, n)
+    if (backwards) {
+      setResult({ verdict: 'error', text: 'WRONG WAY ROUND', sub: backwards })
+      feedback(false)
+      setOldBin('')
+      setNewBin('')
+      oldRef.current?.focus()
       return
     }
     setBusy(true)

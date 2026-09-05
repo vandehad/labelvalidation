@@ -12,6 +12,7 @@ import {
   displayCode,
   newCode,
   normalizeScan,
+  reversedScan,
   generateLabels,
   pickCodes,
   type ZoneBlock,
@@ -318,7 +319,14 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
     if (why) {
       flash('bad', why)
       beep(false)
-      newRef.current?.select()
+      // A reversed scan is a fault in the old field: clear it and put the
+      // cursor back there, so the next trigger pull is the right label. Any
+      // other refusal is about the new field.
+      if (reversedScan(o, n)) {
+        setOldBin('')
+        setNewBin('')
+        oldRef.current?.focus()
+      } else newRef.current?.select()
       return
     }
     setBusy(true)
@@ -1418,6 +1426,15 @@ function Validate({ siteId, siteName, user }: { siteId: number; siteName: string
       flash('bad', 'Old and new are identical — same label scanned twice?')
       beep(false)
       newRef.current?.select()
+      return
+    }
+    const backwards = reversedScan(o, n)
+    if (backwards) {
+      flash('bad', backwards)
+      beep(false)
+      setOldBin('')
+      setNewBin('')
+      oldRef.current?.focus()
       return
     }
     setBusy(true)
