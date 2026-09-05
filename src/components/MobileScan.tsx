@@ -1,12 +1,19 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { displayCode, newCode, normalizeScan, reversedScan, type Verdict } from '@/lib/bins'
+import { displayCode, newCode, normalizeScan, reversedScan, validatePair, type Verdict } from '@/lib/bins'
 import { startCamera, cameraAvailable, type StopCamera } from '@/lib/camera'
 import type { RelaySeen } from '@/lib/printq'
 
 /**
- * Validation on a handheld - built for a Zebra TC52 in a warehouse aisle.
+ * The handheld page - built for a Zebra TC52 in a warehouse aisle, and used
+ * on a phone with the camera.
+ *
+ * Two jobs, one screen. Scan & Pair is the main one: hang a new label, scan
+ * the old, scan the new, and the pair is recorded - or refused, up front, if
+ * the new label is already on another shelf, the old bin is already paired,
+ * or either scan is not what it should be. Validate is the spot check
+ * afterwards: it records what is there and refuses nothing.
  *
  * The differences from the desktop tab are not cosmetic:
  *
@@ -31,6 +38,7 @@ import type { RelaySeen } from '@/lib/printq'
 type User = { name: string; role: string }
 type Site = { id: number; name: string }
 type Source = 'map' | 'pairs'
+type Mode = 'pair' | 'validate'
 
 const api = async (url: string, init?: RequestInit) => {
   const r = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) } })
@@ -291,6 +299,8 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const [sites, setSites] = useState<Site[]>([])
   const [siteId, setSiteId] = useState<number | null>(null)
   const [source, setSource] = useState<Source>('pairs')
+  // Pairing is the job; validation is the spot check. Remembered per device.
+  const [mode, setMode] = useState<Mode>('pair')
   const [setup, setSetup] = useState(false)
 
   const [oldBin, setOldBin] = useState('')
@@ -298,7 +308,10 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const [busy, setBusy] = useState(false)
   const [lastId, setLastId] = useState<number | null>(null)
   const [result, setResult] = useState<{ verdict: Verdict | 'error'; text: string; sub?: string } | null>(null)
-  const [counts, setCounts] = useState({ match: 0, mismatch: 0, unmapped: 0, checked: 0, reference: 0 })
+  const [counts, setCounts] = useState({
+    match: 0, mismatch: 0, unmapped: 0, checked: 0, reference: 0, // validate
+    paired: 0, mine: 0, labels: 0, // pair
+  })
   const [add, setAdd] = useState(false) // the add-a-bin picker is showing instead of the scan fields
   // Keyboard mode, for a label too damaged to scan. inputMode flips to text
   // and the field is refocused inside the tap, which is what makes Android
@@ -339,6 +352,8 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       if (s) setSiteId(s)
       const src = localStorage.getItem('lv.source')
       if (src === 'map' || src === 'pairs') setSource(src)
+      const m = localStorage.getItem('lv.mode')
+      if (m === 'pair' || m === 'validate') setMode(m)
       setPrinter(localStorage.getItem('lv.printer') ?? '')
     } catch {
       /* private mode, or storage disabled */
@@ -361,12 +376,18 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const refresh = useCallback(async () => {
     if (!siteId) return
     try {
-      const d = await api(`/api/checks?site=${siteId}&source=${source}&limit=1`)
-      setCounts(d.counts)
+      if (mode === 'pair') {
+        const d = await api(`/api/pairs?site=${siteId}&limit=1`)
+        const mine = (d.byUser as Array<{ username: string; n: number }>).find(u => u.username === user.name)?.n ?? 0
+        setCounts(c => ({ ...c, paired: d.totals.pairs, labels: d.totals.labels, mine }))
+      } else {
+        const d = await api(`/api/checks?site=${siteId}&source=${source}&limit=1`)
+        setCounts(c => ({ ...c, ...d.counts }))
+      }
     } catch {
       /* transient */
     }
-  }, [siteId, source])
+  }, [siteId, source, mode, user.name])
 
   useEffect(() => {
     void refresh()
@@ -378,6 +399,11 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   useEffect(() => {
     try { localStorage.setItem('lv.source', source) } catch {}
   }, [source])
+  useEffect(() => {
+    try { localStorage.setItem('lv.mode', mode) } catch {}
+    setLastId(null) // an undo id from the other job would delete the wrong thing
+    setResult(null)
+  }, [mode])
   useEffect(() => {
     try { localStorage.setItem('lv.printer', printer) } catch {}
   }, [printer])
@@ -444,6 +470,40 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       oldRef.current?.focus()
       return
     }
+    if (mode === 'pair') {
+      // Refused up front, locally and then by the database. The format gate
+      // is not optional, and the one-for-one rule is a unique constraint -
+      // a second use of a new label comes back 409 naming the shelf that has
+      // it, however many people are scanning at once.
+      const why = validatePair(o, n, { enforceFormat: true, location: null })
+      if (why) {
+        setResult({ verdict: 'mismatch', text: 'REFUSED', sub: why })
+        feedback(false)
+        setNewBin('')
+        newRef.current?.focus()
+        return
+      }
+      setBusy(true)
+      try {
+        const { pair } = await api('/api/pairs', { method: 'POST', body: JSON.stringify({ siteId, oldBin: o, newBin: n }) })
+        setLastId(pair.id)
+        setResult({ verdict: 'match', text: 'PAIRED', sub: `${o}  →  ${n}` })
+        feedback(true)
+        await refresh()
+      } catch (e) {
+        setResult({ verdict: 'mismatch', text: 'REFUSED', sub: e instanceof Error ? e.message : String(e) })
+        feedback(false)
+      } finally {
+        setBusy(false)
+        setOldBin('')
+        setNewBin('')
+        camOld.current = ''
+        setTyping(false)
+        oldRef.current?.focus()
+      }
+      return
+    }
+
     setBusy(true)
     try {
       const r = await api('/api/checks', { method: 'POST', body: JSON.stringify({ siteId, source, oldBin: o, newBin: n }) })
@@ -529,6 +589,14 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const undo = async () => {
     if (!lastId) return
     try {
+      if (mode === 'pair') {
+        await api(`/api/pairs/${lastId}`, { method: 'DELETE' })
+        setLastId(null)
+        setResult({ verdict: 'error', text: 'UNDONE', sub: 'That pair was removed. Both labels are free to scan again.' })
+        await refresh()
+        oldRef.current?.focus()
+        return
+      }
       await api(`/api/checks/${lastId}`, { method: 'DELETE' })
       setLastId(null)
       setResult({ verdict: 'error', text: 'UNDONE', sub: 'That check was removed.' })
@@ -602,7 +670,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   return (
     <div className="m-wrap">
       <div className="m-bar">
-        <b>{add ? 'ADD A BIN' : 'VALIDATE'}</b>
+        <b>{add ? 'ADD A BIN' : mode === 'pair' ? 'SCAN & PAIR' : 'VALIDATE'}</b>
         <span className="m-site">{site?.name ?? 'no site'}</span>
         <button className="m-gear" onClick={() => setSetup(v => !v)} aria-label="Settings">
           ⚙
@@ -611,6 +679,11 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
 
       {setup && (
         <div className="m-pad m-setup">
+          <label className="m-label">Job</label>
+          <select className="m-in" value={mode} onChange={e => setMode(e.target.value as Mode)}>
+            <option value="pair">Scan &amp; Pair — hanging new labels</option>
+            <option value="validate">Validate — spot-check what is hung</option>
+          </select>
           <label className="m-label">Site</label>
           <select className="m-in" value={siteId ?? ''} onChange={e => setSiteId(Number(e.target.value))}>
             {sites.map(s => (
@@ -620,11 +693,15 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
             ))}
             {!sites.length && <option value="">— no sites —</option>}
           </select>
-          <label className="m-label">Check against</label>
-          <select className="m-in" value={source} onChange={e => setSource(e.target.value as Source)}>
-            <option value="pairs">What has been scanned in on this site</option>
-            <option value="map">An uploaded bin map</option>
-          </select>
+          {mode === 'validate' && (
+            <>
+              <label className="m-label">Check against</label>
+              <select className="m-in" value={source} onChange={e => setSource(e.target.value as Source)}>
+                <option value="pairs">What has been scanned in on this site</option>
+                <option value="map">An uploaded bin map</option>
+              </select>
+            </>
+          )}
           <label className="m-label">Printer for added bins</label>
           <select className="m-in" value={printer} onChange={e => setPrinter(e.target.value)}>
             <option value="">Any relay signed in to this site</option>
@@ -654,7 +731,9 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
 
       <div className={`m-verdict ${result?.verdict ?? 'idle'}`}>
         <span className="m-big">{result?.text ?? 'READY'}</span>
-        <span className="m-sub">{result?.sub ?? 'Scan the old label, then the one hung on it.'}</span>
+        <span className="m-sub">
+          {result?.sub ?? (mode === 'pair' ? 'Scan the old label, then the new one you hung on it.' : 'Scan the old label, then the one hung on it.')}
+        </span>
       </div>
 
       {cam && !add && (
@@ -775,6 +854,26 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       </div>
       )}
 
+      {mode === 'pair' ? (
+        <div className="m-tally">
+          <div>
+            <b>{counts.paired.toLocaleString()}</b>
+            <span>paired</span>
+          </div>
+          <div>
+            <b>{counts.mine.toLocaleString()}</b>
+            <span>by me</span>
+          </div>
+          <div>
+            <b>{counts.labels.toLocaleString()}</b>
+            <span>labels</span>
+          </div>
+          <div>
+            <b>{Math.max(0, counts.labels - counts.paired).toLocaleString()}</b>
+            <span>to go</span>
+          </div>
+        </div>
+      ) : (
       <div className="m-tally">
         <div>
           <b>{counts.checked.toLocaleString()}</b>
@@ -793,6 +892,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           <span>to go</span>
         </div>
       </div>
+      )}
     </div>
   )
 }

@@ -225,9 +225,13 @@ the printer that way.
 
 ## On a handheld
 
-`/scan` is validation for a Zebra TC52 or any Android scanner. Sign in on the
-device and it stays signed in for the shift; the site and reference are
-remembered between wakes.
+`/scan` is the floor page for a Zebra TC52, any Android scanner, or a phone
+with its camera. Two jobs, chosen in the settings gear and remembered on the
+device: **Scan & Pair** (the default — hang a label, scan old then new, and it
+is recorded or refused up front, exactly as on the desktop: wrong format,
+reversed, old bin already paired, or new label already on another shelf) and
+**Validate** (the spot check afterwards, which records what is there and
+refuses nothing). Sign in once and it stays signed in for the shift.
 
 It is a separate page rather than a narrow version of the desktop tab, because
 the constraints are different:

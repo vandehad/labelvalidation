@@ -210,9 +210,17 @@ function Main({ user, onOut }: { user: User; onOut: () => void }) {
             className="act ghost"
             href="/scan"
             style={{ padding: '4px 10px', color: '#fff', borderColor: '#fff', textDecoration: 'none' }}
-            title="Validation sized for a handheld"
+            title="Scan & Pair and Validate on a TC52 or a phone camera. The MC92N0 uses /wm."
           >
             Handheld
+          </a>
+          <a
+            className="act ghost"
+            href="/wm"
+            style={{ padding: '4px 10px', color: '#fff', borderColor: '#fff', textDecoration: 'none' }}
+            title="The same two jobs for a Windows Mobile MC92N0"
+          >
+            MC92N0
           </a>
           <b>{user.name}</b>
           <span style={{ opacity: 0.7 }}>{user.role}</span>

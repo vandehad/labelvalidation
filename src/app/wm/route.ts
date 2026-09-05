@@ -1,6 +1,6 @@
-import { db } from '@/lib/db'
+import { db, isUniqueViolation } from '@/lib/db'
 import { currentUser, findUser, verifyPassword, sessionFor, setSessionCookie } from '@/lib/auth'
-import { verdictFor, normalizeScan, reversedScan, newCode, displayCode } from '@/lib/bins'
+import { verdictFor, normalizeScan, reversedScan, newCode, displayCode, validatePair } from '@/lib/bins'
 import { mintOptions, mintBin, checkPick, MintRefused } from '@/lib/mint'
 import { queueJobs, onlineRelays, QueueRefused } from '@/lib/printq'
 import { cookies } from 'next/headers'
@@ -31,7 +31,8 @@ export const runtime = 'nodejs'
  * never has to touch the screen.
  */
 
-type Step = { site: number; source: 'map' | 'pairs' }
+type Mode = 'pair' | 'validate'
+type Step = { site: number; source: 'map' | 'pairs'; mode: Mode }
 
 const WM = 'lv_wm' // site and reference, since there is no localStorage here
 
@@ -87,8 +88,9 @@ try {
   })
 }
 
-const bar = (right = '') =>
-  `<div class="bar">VALIDATE${right ? ` &nbsp;&nbsp; <span style="font-weight:normal">${esc(right)}</span>` : ''}</div>`
+const bar = (right = '', title = 'VALIDATE') =>
+  `<div class="bar">${title}${right ? ` &nbsp;&nbsp; <span style="font-weight:normal">${esc(right)}</span>` : ''}</div>`
+const titleOf = (m: Mode) => (m === 'pair' ? 'SCAN &amp; PAIR' : 'VALIDATE')
 
 /* ---------------- screens ---------------- */
 
@@ -115,6 +117,11 @@ function setupScreen(sites: Array<{ id: number; name: string }>, cur: Step | nul
     `${bar(who)}
 <form method="post" action="/wm">
 <input type="hidden" name="do" value="setup">
+<div class="lbl">JOB</div>
+<div><select name="mode" style="font-size:22px;width:96%">
+<option value="pair"${!cur || cur.mode === 'pair' ? ' selected' : ''}>Scan and pair - hanging new labels</option>
+<option value="validate"${cur && cur.mode === 'validate' ? ' selected' : ''}>Validate - spot-check what is hung</option>
+</select></div>
 <div class="lbl">SITE</div>
 <div><select name="site" style="font-size:22px;width:96%">${opts || '<option value="">no sites</option>'}</select></div>
 <div class="lbl">CHECK AGAINST</div>
@@ -136,7 +143,7 @@ function oldScreen(st: Step, verdict: { colour: string; head: string; sub: strin
     : ''
   return page(
     'Scan old bin',
-    `${bar(tally)}
+    `${bar(tally, titleOf(st.mode))}
 ${banner}
 <form method="post" action="/wm">
 <input type="hidden" name="do" value="old">
@@ -146,15 +153,15 @@ ${banner}
 </form>
 <div class="foot">
 <a href="/wm?do=add">Add a bin</a> &nbsp;|&nbsp;
-<a href="/wm?do=setup">Change site</a> &nbsp;|&nbsp; site ${st.site}, ${st.source}
+<a href="/wm?do=setup">Change job or site</a> &nbsp;|&nbsp; site ${st.site}, ${st.mode === 'pair' ? 'pairing' : st.source}
 </div>`,
   )
 }
 
-function newScreen(oldBin: string, err = '') {
+function newScreen(oldBin: string, err = '', mode: Mode = 'validate') {
   return page(
     'Scan new label',
-    `${bar()}
+    `${bar('', titleOf(mode))}
 ${err ? `<table><tr><td bgcolor="#a32020"><font color="#ffffff"><b>${esc(err)}</b></font></td></tr></table>` : ''}
 <table><tr><td bgcolor="#e6f5ec"><b>OLD:</b> ${esc(oldBin)}</td></tr></table>
 <form method="post" action="/wm">
@@ -163,7 +170,7 @@ ${err ? `<table><tr><td bgcolor="#a32020"><font color="#ffffff"><b>${esc(err)}</
 <div class="lbl">2 &nbsp; LABEL HUNG ON IT &nbsp; &mdash; scan it</div>
 <div><input class="scan" type="text" name="new"></div>
 <div style="padding:12px 8px">
-<input class="go" type="submit" value="Check">
+<input class="go" type="submit" value="${mode === 'pair' ? 'Pair' : 'Check'}">
 &nbsp;<a href="/wm">start over</a>
 </div>
 </form>`,
@@ -288,14 +295,20 @@ async function printOne(siteId: number, userId: number, code: string): Promise<{
 
 async function readStep(): Promise<Step | null> {
   const raw = (await cookies()).get(WM)?.value ?? ''
-  const [site, source] = raw.split(':')
+  const [site, source, mode] = raw.split(':')
   if (!site || (source !== 'map' && source !== 'pairs')) return null
-  return { site: Number(site), source }
+  return { site: Number(site), source, mode: mode === 'validate' ? 'validate' : 'pair' }
 }
 
 async function tallyFor(st: Step): Promise<string> {
   try {
     const sql = db()
+    if (st.mode === 'pair') {
+      const p = (await sql`
+        SELECT (SELECT count(*)::int FROM pairs WHERE site_id = ${st.site}) AS pairs,
+               (SELECT count(*)::int FROM labels WHERE site_id = ${st.site}) AS labels`) as Array<{ pairs: number; labels: number }>
+      return `${p[0].pairs} paired, ${Math.max(0, p[0].labels - p[0].pairs)} to go`
+    }
     const r = (await sql`
       SELECT count(*)::int AS n,
              count(*) FILTER (WHERE verdict <> 'match')::int AS bad
@@ -363,8 +376,9 @@ export async function POST(req: Request) {
   if (doing === 'setup') {
     const site = Number(form.get('site'))
     const source = String(form.get('source')) === 'pairs' ? 'pairs' : 'map'
+    const mode = String(form.get('mode')) === 'validate' ? 'validate' : 'pair'
     if (!site) return Response.redirect(new URL('/wm?do=setup', req.url), 303)
-    ;(await cookies()).set(WM, `${site}:${source}`, { httpOnly: true, path: '/wm', maxAge: 60 * 60 * 24 * 30 })
+    ;(await cookies()).set(WM, `${site}:${source}:${mode}`, { httpOnly: true, path: '/wm', maxAge: 60 * 60 * 24 * 30 })
     return Response.redirect(new URL('/wm', req.url), 303)
   }
 
@@ -404,19 +418,51 @@ export async function POST(req: Request) {
   if (doing === 'old') {
     const oldBin = normalizeScan(String(form.get('old') ?? ''))
     if (!oldBin) return oldScreen(st, null, await tallyFor(st))
-    return newScreen(oldBin)
+    return newScreen(oldBin, '', st.mode)
   }
 
   // Step two: the label hung on it, and the answer.
   if (doing === 'new') {
     const oldBin = normalizeScan(String(form.get('old') ?? ''))
     const newBin = normalizeScan(String(form.get('new') ?? ''))
-    if (!newBin) return newScreen(oldBin)
-    if (oldBin === newBin) return newScreen(oldBin, 'Both fields read the same code.')
+    if (!newBin) return newScreen(oldBin, '', st.mode)
+    if (oldBin === newBin) return newScreen(oldBin, 'Both fields read the same code.', st.mode)
     const backwards = reversedScan(oldBin, newBin)
-    if (backwards) return newScreen(oldBin, backwards)
+    if (backwards) return newScreen(oldBin, backwards, st.mode)
 
     const sql = db()
+
+    // Pairing: refused up front. The format gate first, then the database's
+    // one-for-one constraints - the same rules as /api/pairs, because a pair
+    // recorded from this handheld is worth exactly as much as any other.
+    if (st.mode === 'pair') {
+      const why = validatePair(oldBin, newBin, { enforceFormat: true, location: null })
+      if (why) return newScreen(oldBin, why, 'pair')
+      try {
+        await sql`
+          INSERT INTO pairs (site_id, old_bin, new_bin, location, user_id)
+          VALUES (${st.site}, ${oldBin}, ${newBin}, 'wm', ${user.uid})`
+      } catch (e) {
+        if (!isUniqueViolation(e)) throw e
+        const which = e.constraint === 'pairs_new_unique' ? 'new' : 'old'
+        const clash = (await (which === 'new'
+          ? sql`SELECT p.old_bin, p.new_bin, u.username FROM pairs p LEFT JOIN users u ON u.id = p.user_id
+                WHERE p.site_id = ${st.site} AND p.new_bin = ${newBin} LIMIT 1`
+          : sql`SELECT p.old_bin, p.new_bin, u.username FROM pairs p LEFT JOIN users u ON u.id = p.user_id
+                WHERE p.site_id = ${st.site} AND p.old_bin = ${oldBin} LIMIT 1`)) as Array<{ old_bin: string; new_bin: string; username: string | null }>
+        const c = clash[0]
+        const by = c?.username ? ` (scanned by ${c.username})` : ''
+        if (which === 'new')
+          // The label is on another shelf: keep the old bin, ask for a different label.
+          return newScreen(oldBin, `${newBin} is already used by ${c?.old_bin ?? 'another bin'}${by}. Scan a different label.`, 'pair')
+        return oldScreen(
+          st,
+          { colour: '#a32020', head: 'REFUSED', sub: `${oldBin} is already paired to ${c?.new_bin ?? 'a label'}${by}.` },
+          await tallyFor(st),
+        )
+      }
+      return oldScreen(st, { colour: '#1b7f4b', head: 'PAIRED', sub: `${oldBin} -> ${newBin}` }, await tallyFor(st))
+    }
     const [expectedRows, ownerRows] = await Promise.all([
       st.source === 'map'
         ? sql`SELECT new_bin FROM bin_map WHERE site_id = ${st.site} AND old_bin = ${oldBin} LIMIT 1`
