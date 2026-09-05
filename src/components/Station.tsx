@@ -272,6 +272,8 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
   const [newBin, setNewBin] = useState('')
   const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
   const [pairs, setPairs] = useState<Pair[]>([])
+  // What this session recorded last, so Undo cannot reach anyone else's row.
+  const [lastPair, setLastPair] = useState<{ id: number; old_bin: string; new_bin: string } | null>(null)
   const [totals, setTotals] = useState<{ pairs: number; labels: number }>({ pairs: 0, labels: 0 })
   const [byUser, setByUser] = useState<Array<{ username: string; n: number }>>([])
   const [sound, setSound] = useState(true)
@@ -330,6 +332,7 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
         }),
       })
       setPairs(p => [pair, ...p])
+      setLastPair({ id: pair.id, old_bin: pair.old_bin, new_bin: pair.new_bin })
       setTotals(t => ({ ...t, pairs: t.pairs + 1 }))
       flash('ok', `${o}  →  ${n}`)
       beep(true)
@@ -345,14 +348,24 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
     }
   }
 
+  /**
+   * Undo the pair *this session* recorded, by id.
+   *
+   * It used to search the recent list, which was wrong twice over with more
+   * than one person scanning. For an admin the role check was true for the
+   * first row whoever scanned it, so Undo deleted someone else's work. And for
+   * a scanner the list only holds the last 200 - with twenty people on the
+   * floor your own row falls off it in seconds, and Undo would claim there was
+   * nothing to undo moments after you scanned.
+   */
   const undo = async () => {
-    const mine = pairs.find(p => user.role === 'admin' || p.username === user.name)
-    if (!mine) return flash('warn', 'Nothing of yours to undo.')
+    if (!lastPair) return flash('warn', 'Nothing to undo - scan something first.')
     try {
-      await api(`/api/pairs/${mine.id}`, { method: 'DELETE' })
-      setPairs(p => p.filter(x => x.id !== mine.id))
+      await api(`/api/pairs/${lastPair.id}`, { method: 'DELETE' })
+      setPairs(p => p.filter(x => x.id !== lastPair.id))
       setTotals(t => ({ ...t, pairs: Math.max(0, t.pairs - 1) }))
-      flash('warn', `Removed ${mine.old_bin} → ${mine.new_bin}`)
+      flash('warn', `Removed ${lastPair.old_bin} → ${lastPair.new_bin}`)
+      setLastPair(null)
       oldRef.current?.focus()
     } catch (e) {
       flash('bad', e instanceof Error ? e.message : String(e))
@@ -1267,6 +1280,7 @@ function Validate({ siteId, siteName, user }: { siteId: number; siteName: string
   const [source, setSource] = useState<Source>('map')
   const [counts, setCounts] = useState({ match: 0, mismatch: 0, unmapped: 0, checked: 0, reference: 0 })
   const [checks, setChecks] = useState<Check[]>([])
+  const [lastCheck, setLastCheck] = useState<{ id: number; old_bin: string } | null>(null)
   const [byUser, setByUser] = useState<Array<{ username: string; n: number }>>([])
   const [dupNew, setDupNew] = useState<Array<{ new_bin: string; old_bins: string[] }>>([])
 
@@ -1422,6 +1436,7 @@ function Validate({ siteId, siteName, user }: { siteId: number; siteName: string
         beep(false)
       }
       setChecks(c => [r.check, ...c.filter(x => x.old_bin !== o)])
+      setLastCheck({ id: r.check.id, old_bin: r.check.old_bin })
       await refresh()
       setOldBin('')
       setNewBin('')
@@ -1435,14 +1450,15 @@ function Validate({ siteId, siteName, user }: { siteId: number; siteName: string
     }
   }
 
+  /** Same as the pairing tab: undo what this session recorded, by id. */
   const undo = async () => {
-    const mine = checks.find(c => user.role === 'admin' || c.username === user.name)
-    if (!mine) return flash('warn', 'Nothing of yours to undo.')
+    if (!lastCheck) return flash('warn', 'Nothing to undo - scan something first.')
     try {
-      await api(`/api/checks/${mine.id}`, { method: 'DELETE' })
-      setChecks(c => c.filter(x => x.id !== mine.id))
+      await api(`/api/checks/${lastCheck.id}`, { method: 'DELETE' })
+      setChecks(c => c.filter(x => x.id !== lastCheck.id))
       await refresh()
-      flash('warn', `Removed the check on ${mine.old_bin}.`)
+      flash('warn', `Removed the check on ${lastCheck.old_bin}.`)
+      setLastCheck(null)
       oldRef.current?.focus()
     } catch (err) {
       flash('bad', err instanceof Error ? err.message : String(err))

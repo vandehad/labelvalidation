@@ -15,6 +15,7 @@ import {
   parseZones,
   normalizeScan,
   pickCodes,
+  reversedScan,
 } from '../src/lib/bins.ts'
 import { makeXlsx } from '../src/lib/xlsx.ts'
 import { parseDelimited, readXlsxRows } from '../src/lib/sheet.ts'
@@ -184,6 +185,25 @@ ok('wrong aisle refused', !!validatePair('A-1-1-1', 'A0201C01', { enforceFormat:
 ok('wrong column refused', !!validatePair('A-1-1-1', 'A0102C01', { enforceFormat: true, location: { zone: 'A', aisle: 1, col: 1 } }))
 ok('column free when null', validatePair('A-1-1-1', 'A0109C01', { enforceFormat: true, location: loc }) === null)
 ok('empty refused', !!validatePair('', 'A0101C01', { enforceFormat: true, location: loc }))
+
+/* ---------- the scans went in backwards ---------- */
+// The old field takes anything, because old formats vary by site. But a code
+// shaped like a NEW bin is never an old bin - that is the gun pointed at the
+// wrong label first, and it would write a silently wrong cross-reference row.
+ok('a new code in the old field is refused', !!reversedScan('A0101C01', 'A0101D01'))
+ok('the message says which way round', String(reversedScan('A0101C01', 'A0101D01')).includes('OLD field'))
+ok('a real old bin passes', reversedScan('A-1-1-1', 'A0101C01') === null)
+ok('the no-dash old format passes', reversedScan('A010101', 'A0101C01') === null)
+ok('an unrecognised old format still passes', reversedScan('WHATEVER-9', 'A0101C01') === null)
+ok(
+  'validatePair refuses it too',
+  String(validatePair('A0101C01', 'A0101D01', { enforceFormat: true, location: null })).includes('OLD field'),
+)
+// Both gates together: new-shaped in old, non-new in new.
+ok(
+  'and the new field still demands the new shape',
+  String(validatePair('A-1-1-1', 'A-1-1-2', { enforceFormat: true, location: null })).includes('A0101F01'),
+)
 
 /* ---------- uploaded bin map ---------- */
 const mp = parseMapTable([

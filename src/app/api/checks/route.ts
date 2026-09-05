@@ -1,7 +1,7 @@
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { json, fail } from '@/lib/api'
-import { verdictFor, normalizeScan } from '@/lib/bins'
+import { verdictFor, normalizeScan, reversedScan } from '@/lib/bins'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -83,6 +83,10 @@ export async function POST(req: Request) {
     if (!source) return json({ error: 'source must be map or pairs' }, 400)
     if (!oldBin || !newBin) return json({ error: 'Both fields are needed.' }, 422)
     if (oldBin === newBin) return json({ error: 'Old and new are identical - same label scanned twice?' }, 422)
+    // Refusing a reversed scan is refusing a mis-operation, not a finding -
+    // this route still records every real mismatch it is given.
+    const backwards = reversedScan(oldBin, newBin)
+    if (backwards) return json({ error: backwards }, 422)
 
     const sql = db()
 

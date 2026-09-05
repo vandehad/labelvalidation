@@ -333,6 +333,25 @@ export function pickCodes(all: string[], pick: Pick): PickResult {
   return { codes: all, missing: [] }
 }
 
+/**
+ * A new-format code in the old field means the two scans went in backwards -
+ * the gun was pointed at the new label first.
+ *
+ * Worth its own check rather than leaving it to the format gate: the old field
+ * accepts anything, because old bin formats vary by site and refusing what
+ * `parseOld` does not recognise would block legitimate work. But a code shaped
+ * exactly like a *new* bin is never an old bin, and a reversed pair recorded
+ * that way is a silently wrong cross-reference row - the sort that is only
+ * found months later when someone picks from the wrong shelf.
+ *
+ * Shared so the pairing route and the validation route cannot drift apart.
+ */
+export function reversedScan(oldBin: string, newBin: string): string | null {
+  if (NEW_PATTERN.test(oldBin))
+    return `${oldBin} is a NEW label, but it went into the OLD field. Scan the shelf's existing label first, then the new one.`
+  return null
+}
+
 /** Reasons a pair is refused. Checked client-side for speed and again on the server. */
 export function validatePair(
   oldBin: string,
@@ -341,6 +360,8 @@ export function validatePair(
 ): string | null {
   if (!oldBin || !newBin) return 'Both fields are needed.'
   if (oldBin === newBin) return 'Old and new are identical - same label scanned twice?'
+  const backwards = reversedScan(oldBin, newBin)
+  if (backwards) return backwards
   if (opts.enforceFormat && !NEW_PATTERN.test(newBin))
     return `Incorrect format on the new label: ${newBin}. Expected a code like A0101F01 - zone letter, two-digit aisle, two-digit column, shelf letter, then 01. Scan it again.`
   const loc = opts.location
