@@ -729,12 +729,16 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
         </div>
       )}
 
+      {/* With the camera up the verdict is painted on the picture instead;
+          two copies of it just pushes the viewfinder down the page. */}
+      {!(cam && !add) && (
       <div className={`m-verdict ${result?.verdict ?? 'idle'}`}>
         <span className="m-big">{result?.text ?? 'READY'}</span>
         <span className="m-sub">
           {result?.sub ?? (mode === 'pair' ? 'Scan the old label, then the new one you hung on it.' : 'Scan the old label, then the one hung on it.')}
         </span>
       </div>
+      )}
 
       {cam && !add && (
         <div className="m-cam">
