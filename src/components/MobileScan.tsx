@@ -752,6 +752,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
             <div className={`m-cam-verdict ${result.verdict}`}>
               <b>{result.text}</b>
               {result.sub && <span>{result.sub}</span>}
+              <i>{result.verdict === 'match' ? 'Next: point at the OLD label' : 'Try again: point at the OLD label'}</i>
             </div>
           ) : (
             <div className="m-cam-verdict hint">
