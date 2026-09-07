@@ -89,6 +89,18 @@ run(
   { shell: true },
 )
 
+// Never leave a half-built exe behind. If injection failed, what is on disk
+// is a plain copy of node.exe - it starts, treats the relay's own flags as
+// bad Node options, and exits, which reads as "the app does not start".
+// A real build is the runtime plus the blob, so the size says which it is.
+const grew = statSync(exe).size >= statSync(process.execPath).size + statSync(blob).size
+if (!grew) {
+  rmSync(exe)
+  console.error('')
+  console.error('  FAILED: the blob was not injected. No exe was written. Run again.')
+  process.exit(1)
+}
+
 const mb = (statSync(exe).size / 1024 / 1024).toFixed(0)
 console.log('')
 console.log(`  built  ${exe}  (${mb} MB)`)
