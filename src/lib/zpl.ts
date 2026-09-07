@@ -200,9 +200,11 @@ function sampleBody(code: string, shown: string, copies: number, offsetX = 0, pw
   // together, so the design is untouched and only where it lands changes.
   const x = String(Math.max(0, 38 + Math.round(offsetX))).padStart(4, '0')
   return [
-    '^XA^MCY^XZ^XA^ILLB^FS',
-    // After ^ILLB, so the stored format cannot override it.
-    `^PW${pw}`,
+    // ^PW is the first command in the label. A GX420d on USB ignored it when
+    // it followed ^ILLB and printed three inches wide; first in the block it
+    // took. So: width, then the map-clear and the stored-format load that the
+    // site's file does, then the fields.
+    `^XA^PW${pw}^MCY^ILLB^FS`,
     '^FO0000,0000^AAN,0000,0000^FD ^FS',
     `^FO${x},0084^BY03,3,100^B3N,N,0100,N,N^FD${barcodeData(code)}^FS`,
     `^FO${x},0012^A0N,0084,0098^FD${shown}^FS`,

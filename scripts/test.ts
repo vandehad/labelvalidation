@@ -349,8 +349,7 @@ const SAMPLE = [
   '^XA^MCY^XZ',
   '^XA^LH0000,0000^FS^PON^FS',
   '^ISLB,N^FS^XZ',
-  '^XA^MCY^XZ^XA^ILLB^FS',
-  '^PW832',
+  '^XA^PW832^MCY^ILLB^FS',
   '^FO0000,0000^AAN,0000,0000^FD ^FS',
   '^FO0038,0084^BY03,3,100^B3N,N,0100,N,N^FDA     A2707G05^FS',
   '^FO0038,0012^A0N,0084,0098^FDA27-07G05^FS',
@@ -366,10 +365,11 @@ ok('recalls the saved configuration first', zplLabel('A2707G05').split('\n')[1] 
 // The width is stated on every label, from the stock chosen on the Print
 // card: 4 x 1 says 832, 3 x 1 says 609. Inside the label, after ^JUR, so the
 // restore cannot undo it - that is what survived the ZQ630's power cycles.
-ok('4in stock states the full 832-dot head on the label', zplLabel('A2707G05').includes('\n^PW832\n'))
-ok('3in stock states 609', zplLabel('A2707G05', { ...DEFAULT_LABEL, widthIn: 3 }).includes('\n^PW609\n'))
+ok('4in stock states the full 832-dot head on the label', zplLabel('A2707G05').includes('^XA^PW832^'))
+ok('3in stock states 609', zplLabel('A2707G05', { ...DEFAULT_LABEL, widthIn: 3 }).includes('^XA^PW609^'))
 ok('the width comes after ^JUR, so the restore cannot undo it', zplLabel('A2707G05').indexOf('^PW832') > zplLabel('A2707G05').indexOf('^XA^JUR^XZ'))
-ok('and after ^ILLB, so the stored format cannot either', zplLabel('A2707G05').indexOf('^PW832') > zplLabel('A2707G05').indexOf('^ILLB'))
+// A GX420d on USB ignored ^PW when it followed ^ILLB and printed 3in wide.
+ok('and first in the label, before ^ILLB, or the printer ignores it', zplLabel('A2707G05').indexOf('^PW832') < zplLabel('A2707G05').indexOf('^ILLB'))
 ok('still no ^LL - the gap sensor decides length', !zplLabel('A2707G05').includes('^LL'))
 ok('printWidth: 4 -> 832, 3 -> 609, a 300dpi head is arithmetic', printWidth(4) === 832 && printWidth(3) === 609 && printWidth(4, 300) === 1200)
 // Their file opens with ~CC¬, which switches the format prefix and leaves it
