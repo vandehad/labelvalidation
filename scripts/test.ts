@@ -405,6 +405,26 @@ ok('zbatch keeps every dashed line', zbatch.includes('^FDA01-01A01^FS'))
 ok('zbatch states the width on every label', (zbatch.match(/\^PW832/g) ?? []).length === 3)
 ok('a 3in batch states 609 on every label', (zplBatch(['A0101A01', 'A0101B01'], { ...DEFAULT_LABEL, widthIn: 3 }).match(/\^PW609/g) ?? []).length === 2)
 
+/* ---------- ^PW is the first command of every label, whatever the stock or template ---------- */
+// A GX420d on USB ignored ^PW anywhere later in the label and printed three
+// inches wide. So every label block - site format or scaled, 4in or 3in -
+// has to open ^XA^PW<dots>. Setup blocks in the preamble carry no fields
+// and are exempt; the check is on blocks that print something.
+{
+  const specs = [
+    ['site 4in', { ...DEFAULT_LABEL, widthIn: 4 }, 832],
+    ['site 3in', { ...DEFAULT_LABEL, widthIn: 3 }, 609],
+    ['scaled 4in', { ...DEFAULT_LABEL, template: 'scaled' as const, widthIn: 4 }, 832],
+    ['scaled 3in', { ...DEFAULT_LABEL, template: 'scaled' as const, widthIn: 3 }, 609],
+  ] as const
+  for (const [name, spec, dots] of specs) {
+    const run = zplBatch(['A0101A01', 'M0501B01', 'B3612A05'], spec)
+    const blocks = run.split('^XA').slice(1).filter(b => b.includes('^FD'))
+    ok(`${name}: three printing blocks`, blocks.length === 3)
+    ok(`${name}: every one opens with ^PW${dots}`, blocks.every(b => b.startsWith(`^PW${dots}`)))
+  }
+}
+
 /* ---------- what a scanner hands back ---------- */
 // The label encodes `A     A0101B01`, so the gun returns all fourteen
 // characters. Everything after the last space is the bin code.
