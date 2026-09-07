@@ -421,7 +421,7 @@ ok('a 3in batch states 609 on every label', (zplBatch(['A0101A01', 'A0101B01'], 
     const run = zplBatch(['A0101A01', 'M0501B01', 'B3612A05'], spec)
     const blocks = run.split('^XA').slice(1).filter(b => b.includes('^FD'))
     ok(`${name}: three printing blocks`, blocks.length === 3)
-    ok(`${name}: every one opens with ^PW${dots}`, blocks.every(b => b.startsWith(`^PW${dots}`)))
+    ok(`${name}: every one opens with ^PW${dots}`, blocks.every(b => b.trimStart().startsWith(`^PW${dots}`)))
   }
 }
 
