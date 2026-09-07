@@ -241,15 +241,21 @@ public class Raw {
   }
 }
 "@
-[Raw]::Send($args[0], $args[1])
+[Raw]::Send($env:LV_PRINTER, $env:LV_FILE)
 `.trim()
 
-function powershell(script, args) {
+/**
+ * Values go in through the environment, not the command line. `-Command`
+ * takes the rest of the line as the command text, so anything appended after
+ * the script - an `-args`, a printer name - becomes part of the command and
+ * breaks it. That is why the printer list came back empty.
+ */
+function powershell(script, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script, '-args', ...args],
-      { windowsHide: true },
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { windowsHide: true, env: { ...process.env, ...env } },
     )
     let out = ''
     let err = ''
@@ -266,7 +272,7 @@ async function sendWindowsRaw(zpl) {
   const file = path.join(os.tmpdir(), `lv-${Date.now()}-${Math.random().toString(36).slice(2)}.zpl`)
   fs.writeFileSync(file, zpl, 'binary')
   try {
-    await powershell(PS_RAW, [target.printer, file])
+    await powershell(PS_RAW, { LV_PRINTER: target.printer, LV_FILE: file })
   } finally {
     try {
       fs.unlinkSync(file)
@@ -279,7 +285,7 @@ async function sendWindowsRaw(zpl) {
 async function listPrinters() {
   if (process.platform !== 'win32') return []
   try {
-    const out = await powershell('Get-Printer | Select-Object -ExpandProperty Name', [])
+    const out = await powershell('Get-Printer | Select-Object -ExpandProperty Name')
     return out.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
   } catch {
     return []

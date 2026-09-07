@@ -374,11 +374,14 @@ variable is listed for Production and the serving deployment is newer than it,
 so the value is most likely empty. Re-add it in the dashboard and redeploy;
 env changes only reach *new* deployments.
 
-**The Windows RAW print path has never run.** The network path is proven end
-to end - labels came out of the Zebra at 192.168.60.81 directly, through the
-relay, and through the packaged `.exe`. The USB/local-queue path is written but
-untested; a `WritePrinter` failure would surface as a PowerShell error in the
-relay's console.
+**The Windows RAW print path is proven, as of 7 Sep 2026.** It had never run:
+the relay appended `-args <printer> <file>` after `-Command <script>`, and
+PowerShell takes the rest of the line as the command text, so the arguments
+became part of the command and broke it. The same bug emptied the printer
+list on the setup page. Values now go in through environment variables
+(`LV_PRINTER`, `LV_FILE`). `Get-Printer` lists twelve queues on the dev
+machine and a test label reaches the `ZDesigner GX420d` queue through
+`winspool` in RAW mode.
 
 **Nothing has been tested with two people scanning at once.** The constraints
 make the race impossible in principle and the conflict path is proven, but the
