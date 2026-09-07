@@ -977,6 +977,12 @@ function Print({ siteId }: { siteId: number }) {
   const toggleZone = (z: string) =>
     setZoneSel(sel => (sel.includes(z) ? sel.filter(x => x !== z) : [...sel, z].sort()))
   const exampleCode = selected[0] ?? codes?.[0] ?? 'A0000A01'
+  // What the site actually holds, for a range that misses it - typing a zone
+  // the site does not have is the usual reason a range comes back empty.
+  const span = (() => {
+    const sorted = [...(codes ?? [])].sort()
+    return [sorted[0] ?? '—', sorted[sorted.length - 1] ?? '—']
+  })()
 
   const download = () => {
     const zpl = zplBatch(selected, spec)
@@ -1237,7 +1243,7 @@ function Print({ siteId }: { siteId: number }) {
           {pickMode === 'zones'
             ? `This site holds ${zonesHere.join(', ') || 'no'} zone${zonesHere.length === 1 ? '' : 's'} — pick one above.`
             : pickMode === 'range'
-              ? 'No stored code falls between those two. Leave an end blank for an open bound.'
+              ? `No stored code falls between those two. This site's labels run ${span[0]} to ${span[1]} (zone${zonesHere.length === 1 ? '' : 's'} ${zonesHere.join(', ')}). Leave an end blank for an open bound.`
               : pickMode === 'list'
                 ? "None of those codes are in this site's label set."
                 : pickMode === 'minted'
