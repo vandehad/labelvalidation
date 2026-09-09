@@ -285,6 +285,15 @@ whether the label came out. The Labels tab's "Added on the floor" pick still
 lists every minted bin for printing in one go; `/api/labels` returns `origin`
 for that.
 
+**Generating adds; replacing is explicit and refused once pairs exist.**
+`/api/labels` used to `DELETE` the site's labels before every insert, on the
+assumption a set is built once. Site 7 was built from a CSV in one go, then
+one aisle was added from the tab - and the set went from 44,451 labels to
+210. Generate now adds (the unique index already made re-adding harmless);
+the tab offers "replace" as a checkbox with a confirm, and the route refuses
+a replace while pairs point at the labels. Clearing a set is Admin -> Wipe,
+which names what it destroys and asks for the site's name.
+
 **Superset then reconcile.** Print more labels than needed, scan what is real,
 then delete the leftovers. The alternative — print exactly what the old data
 implies — is what failed at site 18.

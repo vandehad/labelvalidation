@@ -55,6 +55,12 @@ npm run user -- <name> <password> [scanner|admin]
   selects from the site's stored set and reports a code that is not in it
   rather than printing it. Printing a code the database has never heard of is
   how a rack ends up with a bin nothing can find.
+- **Generating labels adds to the set; it never replaces unless asked.**
+  `POST /api/labels` inserts with `ON CONFLICT DO NOTHING`. `replace: true` is
+  the only thing that deletes first, the tab asks for it with a checkbox and a
+  confirm, and the route refuses it while `pairs` exist for the site. The first
+  version deleted before every insert, and adding one aisle to site 7 wiped
+  44,451 labels. Admin -> Wipe is the deliberate way to clear a set.
 - **`generateLabels` reports what it could not honour.** Overlapping zone
   blocks would otherwise be swallowed by `UNIQUE (site_id, code)` without a
   word. `problems` carries them out to the caller; do not drop it.

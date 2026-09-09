@@ -266,7 +266,7 @@ function Main({ user, onOut }: { user: User; onOut: () => void }) {
         ) : tab === 'val' ? (
           <Validate siteId={siteId} siteName={sites.find(s => s.id === siteId)?.name ?? ''} user={user} />
         ) : tab === 'labels' ? (
-          <Labels siteId={siteId} user={user} onDone={loadSites} />
+          <Labels siteId={siteId} user={user} stored={sites.find(s => s.id === siteId)?.labels ?? 0} onDone={loadSites} />
         ) : (
           <Reconcile siteId={siteId} />
         )}
@@ -529,8 +529,11 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
 
 /* ------------------------------------------------------------------ */
 
-function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: () => void }) {
+function Labels({ siteId, user, stored, onDone }: { siteId: number; user: User; stored: number; onDone: () => void }) {
   const [mode, setMode] = useState<'derive' | 'blocks'>('derive')
+  // Generating adds to the set. Replacing it is a separate, explicit choice -
+  // the first version replaced every time, and one added aisle wiped 44,000.
+  const [replace, setReplace] = useState(false)
   const [text, setText] = useState('')
   const [basis, setBasis] = useState<Basis>('global')
   const [zMode, setZMode] = useState<ZMode>('auto')
@@ -541,6 +544,9 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
   const [busy, setBusy] = useState(false)
   const [res, setRes] = useState<{
     stored: number
+    added?: number
+    total?: number
+    replaced?: boolean
     columns: number
     zones: number
     tallest: number
@@ -598,8 +604,11 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
         if (!preview?.labels.length) throw new Error('That would produce no labels — check the zones and ranges.')
         spec = { mode: 'blocks', blocks, zMode }
       }
-      const r = await api('/api/labels', { method: 'POST', body: JSON.stringify({ siteId, spec }) })
+      if (replace && stored > 0 && !confirm(`Replace all ${stored.toLocaleString()} labels stored for this site with these ${(preview?.labels.length ?? 0).toLocaleString()}?`))
+        return
+      const r = await api('/api/labels', { method: 'POST', body: JSON.stringify({ siteId, spec, replace }) })
       setRes(r)
+      setReplace(false)
       onDone()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -767,9 +776,19 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
             {busy
               ? 'Generating…'
               : mode === 'blocks'
-                ? `Generate ${(preview?.labels.length ?? 0).toLocaleString()} and store`
-                : 'Generate and store'}
+                ? `${replace ? 'Replace the set with' : stored ? 'Add' : 'Generate'} ${(preview?.labels.length ?? 0).toLocaleString()}${!replace && stored ? ' to the set' : ''}`
+                : replace
+                  ? 'Replace the set'
+                  : stored
+                    ? 'Add to the set'
+                    : 'Generate and store'}
           </button>
+          {stored > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, textTransform: 'none', letterSpacing: 0 }}>
+              <input type="checkbox" checked={replace} onChange={e => setReplace(e.target.checked)} />
+              Replace the {stored.toLocaleString()} already stored instead of adding
+            </label>
+          )}
           <a className="act ghost" href={`/api/export?site=${siteId}`} style={{ textDecoration: 'none' }}>
             Export workbook (.xlsx)
           </a>
@@ -780,7 +799,9 @@ function Labels({ siteId, user, onDone }: { siteId: number; user: User; onDone: 
         <div className="card">
           <h2>Generated</h2>
           <div className="stats">
-            <Stat n={res.stored.toLocaleString()} l="labels stored" />
+            <Stat n={res.stored.toLocaleString()} l="generated" />
+            <Stat n={(res.added ?? res.stored).toLocaleString()} l={res.replaced ? 'stored (replaced)' : 'newly added'} />
+            <Stat n={(res.total ?? res.stored).toLocaleString()} l="in the set now" />
             <Stat n={res.columns.toLocaleString()} l="columns" />
             <Stat n={res.zones} l="zones" />
             <Stat n={res.tallest} l="tallest column" />
