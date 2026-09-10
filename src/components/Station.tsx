@@ -934,8 +934,19 @@ function Print({ siteId }: { siteId: number }) {
     }
   }, [siteId])
 
+  // The stored set changes under this card - a bin added from a handheld, a
+  // range added from the Labels tab, another person at another desk - so it
+  // is re-read on a timer and whenever the window comes back into focus, not
+  // only when the card first opens.
   useEffect(() => {
     void load()
+    const t = setInterval(() => void load(), 30000)
+    const onFocus = () => void load()
+    window.addEventListener('focus', onFocus)
+    return () => {
+      clearInterval(t)
+      window.removeEventListener('focus', onFocus)
+    }
   }, [load])
 
   const loadQueue = useCallback(async () => {
