@@ -557,12 +557,21 @@ function Labels({ siteId, user, stored, onDone }: { siteId: number; user: User; 
   } | null>(null)
   const [err, setErr] = useState('')
 
+  // A scanner cannot generate the set, but reprinting is floor work: a torn
+  // label, a bin added in an aisle. They get the Print card limited to codes
+  // they name and the bins added on the floor - never a whole zone.
   if (user.role !== 'admin')
     return (
-      <div className="card">
-        <h2>Labels</h2>
-        <p className="hint">Only an admin can generate the label set for a site.</p>
-      </div>
+      <>
+        <div className="card">
+          <h2>Labels</h2>
+          <p className="hint">
+            Only an admin can generate the label set for a site. Reprints are below: scan or type the codes, or
+            pick the bins added on the floor.
+          </p>
+        </div>
+        <Print siteId={siteId} limited />
+      </>
     )
 
   const setBlock = (i: number, patch: Partial<ZoneBlock>) =>
@@ -849,7 +858,7 @@ function Labels({ siteId, user, stored, onDone }: { siteId: number; user: User; 
  * Labels are printed from what is *stored* for the site, never from the form
  * above, so what comes off the printer is what the database will accept.
  */
-function Print({ siteId }: { siteId: number }) {
+function Print({ siteId, limited = false }: { siteId: number; limited?: boolean }) {
   const [relay, setRelay] = useState('http://localhost:9110')
   const [status, setStatus] = useState<{ ok: boolean; target?: string; mode?: string } | null>(null)
   // Where the labels go. 'queue' hands them to whichever relay is signed in
@@ -895,7 +904,7 @@ function Print({ siteId }: { siteId: number }) {
   const [darkness, setDarkness] = useState('0')
   const [speed, setSpeed] = useState('4')
   const [zoneSel, setZoneSel] = useState<string[]>([])
-  const [pickMode, setPickMode] = useState<Pick['mode'] | 'minted'>('all')
+  const [pickMode, setPickMode] = useState<Pick['mode'] | 'minted'>(limited ? 'list' : 'all')
   const [rangeFrom, setRangeFrom] = useState('')
   const [rangeTo, setRangeTo] = useState('')
   const [list, setList] = useState('')
@@ -1171,9 +1180,9 @@ function Print({ siteId }: { siteId: number }) {
         <div style={{ flex: '1 1 260px' }}>
           <label>What to print</label>
           <select value={pickMode} onChange={e => setPickMode(e.target.value as Pick['mode'] | 'minted')}>
-            <option value="all">Every label stored for this site</option>
-            <option value="zones">Whole zones</option>
-            <option value="range">A range, from one code to another</option>
+            {!limited && <option value="all">Every label stored for this site</option>}
+            {!limited && <option value="zones">Whole zones</option>}
+            {!limited && <option value="range">A range, from one code to another</option>}
             <option value="list">Just these — one code per line, or scan them</option>
             <option value="minted">Added on the floor — bins minted from a handheld or here, to print and hang</option>
           </select>
