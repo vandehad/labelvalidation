@@ -3,6 +3,7 @@ import { currentUser, findUser, verifyPassword, sessionFor, setSessionCookie } f
 import { verdictFor, normalizeScan, reversedScan, newCode, displayCode, validatePair } from '@/lib/bins'
 import { mintOptions, mintBin, checkPick, MintRefused } from '@/lib/mint'
 import { queueJobs, onlineRelays, QueueRefused } from '@/lib/printq'
+import { resolveLabel } from '@/lib/lookup'
 import { cookies } from 'next/headers'
 
 export const dynamic = 'force-dynamic'
@@ -153,6 +154,7 @@ ${banner}
 </form>
 <div class="foot">
 <a href="/wm?do=add">Add a bin</a> &nbsp;|&nbsp;
+<a href="/wm?do=reprint">Reprint</a> &nbsp;|&nbsp;
 <a href="/wm?do=setup">Change job or site</a> &nbsp;|&nbsp; site ${st.site}, ${st.mode === 'pair' ? 'pairing' : st.source}
 </div>`,
   )
@@ -276,6 +278,27 @@ function addedScreen(code: string, oldBin: string, tally: string, print: { colou
   )
 }
 
+/**
+ * Reprint: one field, the new label scanned or the old bin typed. A
+ * new-format code the site does not hold goes to Add-a-bin with the cascade
+ * already walked to its column.
+ */
+function reprintScreen(err = '', done: { colour: string; head: string; sub: string } | null = null) {
+  return page(
+    'Reprint',
+    `${bar('', 'REPRINT')}
+${err ? `<table><tr><td bgcolor="#a32020"><font color="#ffffff"><b>${esc(err)}</b></font></td></tr></table>` : ''}
+${done ? `<table><tr><td bgcolor="${done.colour}"><font color="#ffffff"><div class="big">${esc(done.head)}</div><div class="sub">${esc(done.sub)}</div></font></td></tr></table>` : ''}
+<form method="post" action="/wm">
+<input type="hidden" name="do" value="reprint">
+<div class="lbl">LABEL TO REPRINT &nbsp; &mdash; scan it, or type the old bin</div>
+<div><input class="scan" type="text" name="bin"></div>
+<div style="padding:12px 8px"><input class="go" type="submit" value="Reprint">
+&nbsp;<a href="/wm">back to scanning</a></div>
+</form>`,
+  )
+}
+
 /** Queue one label for the site's relay and say what happened, in a colour. */
 async function printOne(siteId: number, userId: number, code: string): Promise<{ colour: string; text: string }> {
   try {
@@ -345,6 +368,8 @@ export async function GET(req: Request) {
     })
   }
 
+  if (q.get('do') === 'reprint' && st) return reprintScreen()
+
   if (q.get('do') === 'setup' || !st) {
     const sql = db()
     const sites = (await sql`SELECT id, name FROM sites ORDER BY created_at DESC`) as Array<{
@@ -412,6 +437,27 @@ export async function POST(req: Request) {
     if (!rows[0]) return Response.redirect(new URL('/wm', req.url), 303)
     const print = await printOne(st.site, user.uid, code)
     return addedScreen(code, rows[0].old_bin, await tallyFor(st), print)
+  }
+
+  if (doing === 'reprint') {
+    const raw = String(form.get('bin') ?? '')
+    const scanned = normalizeScan(raw)
+    if (!scanned) return reprintScreen()
+    const r = await resolveLabel(db(), st.site, scanned)
+    if (r.stored && r.code) {
+      const print = await printOne(st.site, user.uid, r.code)
+      return reprintScreen('', {
+        colour: print.colour,
+        head: 'REPRINT',
+        sub: `${displayCode(r.code)}${r.oldBin ? ` (was ${r.oldBin})` : ''}: ${print.text}`,
+      })
+    }
+    if (r.kind === 'new' && r.parts)
+      return Response.redirect(
+        new URL(`/wm?do=add&zone=${r.parts.zone}&aisle=${r.parts.aisle}&col=${r.parts.col}`, req.url),
+        303,
+      )
+    return reprintScreen(`${scanned} has no new label paired to it, so there is nothing to reprint. Scan the new label itself, or add a bin.`)
   }
 
   // Step one: the old label. One field, so Enter from the wedge lands here.

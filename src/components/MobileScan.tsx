@@ -113,10 +113,13 @@ function MobileAdd({
   siteId,
   onAdded,
   onClose,
+  initial = null,
 }: {
   siteId: number
   onAdded: (code: string, oldBin: string) => void
   onClose: () => void
+  /** Opened from a reprint of a code the site does not hold: pick these first. */
+  initial?: { zone: string; aisle: number; col: number; letter: string } | null
 }) {
   const [zones, setZones] = useState<string[] | null>(null)
   const [aisles, setAisles] = useState<number[]>([])
@@ -147,8 +150,18 @@ function MobileAdd({
   useEffect(() => {
     void (async () => {
       const d = await step('')
-      if (d) setZones(d.zones)
+      if (!d) return
+      setZones(d.zones)
+      // Walk the cascade for a prefilled pick, so the person sees the shelf
+      // the scanned code names and only has to confirm it.
+      if (initial && d.zones.includes(initial.zone)) {
+        await pickZone(initial.zone)
+        await pickAisle(initial.aisle)
+        await pickCol(initial.col)
+        setLetter(initial.letter)
+      }
     })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
 
   const pickZone = async (z: string) => {
@@ -312,7 +325,15 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
     match: 0, mismatch: 0, unmapped: 0, checked: 0, reference: 0, // validate
     paired: 0, mine: 0, labels: 0, // pair
   })
-  const [add, setAdd] = useState(false) // the add-a-bin picker is showing instead of the scan fields
+  // Which panel sits under the verdict: the scan fields, the add-a-bin
+  // picker, or the reprint field.
+  const [panel, setPanel] = useState<'scan' | 'add' | 'reprint'>('scan')
+  const add = panel === 'add'
+  // Add-a-bin opened from a reprint of a code the site does not hold comes
+  // with that code's zone, aisle, column and shelf already picked.
+  const [addInitial, setAddInitial] = useState<{ zone: string; aisle: number; col: number; letter: string } | null>(null)
+  const [reBin, setReBin] = useState('')
+  const reRef = useRef<HTMLInputElement>(null)
   // Keyboard mode, for a label too damaged to scan. inputMode flips to text
   // and the field is refocused inside the tap, which is what makes Android
   // raise the keyboard. Off again after the pair commits.
@@ -548,6 +569,10 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   // the camera loop always calls the current version without a restart.
   const camStep: 'old' | 'new' = camOld.current || oldBin.trim() ? 'new' : 'old'
   onCodeRef.current = (text: string) => {
+    if (panel === 'reprint') {
+      void reprint(text)
+      return
+    }
     if (camStep === 'old') {
       camOld.current = text
       setOldBin(text)
@@ -611,8 +636,10 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   // A bin added from the aisle gets its label queued at once, and this
   // watches the job until a relay reports it printed - so the verdict on
   // screen goes ADDED, PRINTING, PRINTED without anyone touching anything.
-  const printMinted = async (code: string, oldBin: string) => {
-    const base = `${displayCode(code)} is recorded as ${oldBin}.`
+  // Queue one label and watch the job until a relay reports it printed, so
+  // the verdict walks PRINTING -> PRINTED without anyone touching anything.
+  // `word` is what the label is to the person holding the device.
+  const watchPrint = async (code: string, base: string, word: 'ADDED' | 'REPRINT') => {
     try {
       const r = await api('/api/print', {
         method: 'POST',
@@ -622,18 +649,18 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       if (!r.online.length) {
         setResult({
           verdict: 'unmapped',
-          text: 'ADDED · NOT PRINTED YET',
+          text: `${word} · NOT PRINTED YET`,
           sub: `${base} No relay is signed in to this site, so the label is queued and prints when one is.`,
         })
         return
       }
-      setResult({ verdict: 'match', text: 'ADDED · PRINTING', sub: `${base} Printing at ${r.online.join(', ')}…` })
+      setResult({ verdict: 'match', text: `${word} · PRINTING`, sub: `${base} Printing at ${r.online.join(', ')}…` })
       const started = Date.now()
       while (Date.now() - started < 90_000) {
         await new Promise(res => setTimeout(res, 2000))
         const { job } = await api(`/api/print/${id}`)
         if (job.status === 'done') {
-          setResult({ verdict: 'match', text: 'ADDED · PRINTED', sub: `${base} Printed on ${job.claimed_by}. Hang it.` })
+          setResult({ verdict: 'match', text: `${word} · PRINTED`, sub: `${base} Printed on ${job.claimed_by}.` })
           feedback(true)
           return
         }
@@ -643,9 +670,51 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           return
         }
       }
-      setResult({ verdict: 'unmapped', text: 'ADDED · STILL QUEUED', sub: `${base} The relay has not picked it up yet. It stays queued.` })
+      setResult({ verdict: 'unmapped', text: `${word} · STILL QUEUED`, sub: `${base} The relay has not picked it up yet. It stays queued.` })
     } catch (e) {
-      setResult({ verdict: 'error', text: 'ADDED · NOT PRINTED', sub: `${base} ${e instanceof Error ? e.message : String(e)}` })
+      setResult({ verdict: 'error', text: `${word} · NOT PRINTED`, sub: `${base} ${e instanceof Error ? e.message : String(e)}` })
+      feedback(false)
+    }
+  }
+  const printMinted = (code: string, oldBin: string) =>
+    watchPrint(code, `${displayCode(code)} is recorded as ${oldBin}. Hang it.`, 'ADDED')
+
+  // Reprint: the new label scanned, or the old bin typed. A new-format code
+  // the site does not hold is not refused - it opens Add-a-bin with the
+  // code's zone, aisle, column and shelf already picked, because the usual
+  // reason is a shelf that was never in the plan.
+  const reprint = async (raw: string) => {
+    const scanned = normalizeScan(raw)
+    if (!scanned) return
+    setReBin('')
+    try {
+      const r = await api(`/api/pairs/lookup?site=${siteId}&bin=${encodeURIComponent(scanned)}`)
+      if (r.stored && r.code) {
+        await watchPrint(r.code, `${displayCode(r.code)}${r.oldBin ? ` (was ${r.oldBin})` : ''}.`, 'REPRINT')
+        return
+      }
+      if (r.kind === 'new' && r.parts) {
+        setAddInitial(r.parts)
+        setPanel('add')
+        setResult({
+          verdict: 'unmapped',
+          text: 'NOT IN THE LABEL SET',
+          sub: `${displayCode(r.code)} is not one of this site's labels. Add it here and it prints.`,
+        })
+        feedback(false)
+        return
+      }
+      setResult({
+        verdict: 'unmapped',
+        text: 'NOT PAIRED YET',
+        sub: `${scanned} has no new label paired to it, so there is nothing to reprint. Scan the new label itself, or add a bin.`,
+      })
+      feedback(false)
+    } catch (e) {
+      setResult({ verdict: 'error', text: 'REPRINT FAILED', sub: e instanceof Error ? e.message : String(e) })
+      feedback(false)
+    } finally {
+      setTimeout(() => reRef.current?.focus(), 0)
     }
   }
 
@@ -671,7 +740,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   return (
     <div className="m-wrap">
       <div className="m-bar">
-        <b>{add ? 'ADD A BIN' : mode === 'pair' ? 'SCAN & PAIR' : 'VALIDATE'}</b>
+        <b>{add ? 'ADD A BIN' : panel === 'reprint' ? 'REPRINT' : mode === 'pair' ? 'SCAN & PAIR' : 'VALIDATE'}</b>
         <span className="m-site">{site?.name ?? 'no site'}</span>
         <button className="m-gear" onClick={() => setSetup(v => !v)} aria-label="Settings">
           ⚙
@@ -754,7 +823,9 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
               <b>{result.text}</b>
               {result.sub && <span>{result.sub}</span>}
               <i>
-                {camStep === 'new'
+                {panel === 'reprint'
+                  ? 'Next: point at the label to reprint'
+                  : camStep === 'new'
                   ? 'Now point at the label hung on it'
                   : result.verdict === 'match'
                     ? 'Next: point at the OLD label'
@@ -763,7 +834,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
             </div>
           ) : (
             <div className="m-cam-verdict hint">
-              <b>{camStep === 'old' ? 'Point at the OLD label' : 'Now the label hung on it'}</b>
+              <b>{panel === 'reprint' ? 'Point at the label to reprint' : camStep === 'old' ? 'Point at the OLD label' : 'Now the label hung on it'}</b>
             </div>
           )}
           <div className="m-cam-guide" />
@@ -774,6 +845,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       {add && siteId ? (
         <MobileAdd
           siteId={siteId}
+          initial={addInitial}
           onAdded={(code, oldBin) => {
             setResult({ verdict: 'match', text: 'ADDED', sub: `${displayCode(code)} is recorded as ${oldBin}. Queuing the label…` })
             feedback(true)
@@ -781,10 +853,48 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
             void printMinted(code, oldBin)
           }}
           onClose={() => {
-            setAdd(false)
+            setPanel('scan')
+            setAddInitial(null)
             setTimeout(() => oldRef.current?.focus(), 0)
           }}
         />
+      ) : panel === 'reprint' ? (
+        <div className="m-pad">
+          <label className="m-label">Scan the label to reprint, or type the old bin</label>
+          <input
+            ref={reRef}
+            className={`m-in scan ${reBin ? 'armed' : ''}`}
+            value={reBin}
+            onChange={e => setReBin(e.target.value)}
+            onKeyDown={e => {
+              if (e.key !== 'Enter' && e.key !== 'Tab') return
+              e.preventDefault()
+              void reprint(reBin)
+            }}
+            onDoubleClick={() => typeInto(reRef)}
+            inputMode={typing ? 'text' : 'none'}
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            placeholder="scan…"
+            autoFocus
+          />
+          <div className="m-row">
+            <button className={`m-btn ${typing ? '' : 'ghost'}`} onClick={() => (typing ? setTyping(false) : typeInto(reRef))}>
+              {typing ? 'Keyboard off' : 'Type it'}
+            </button>
+            <button
+              className="m-btn ghost"
+              onClick={() => {
+                setPanel('scan')
+                setTyping(false)
+                setTimeout(() => oldRef.current?.focus(), 0)
+              }}
+            >
+              Back to scanning
+            </button>
+          </div>
+        </div>
       ) : (
       <div className="m-pad">
         <label className="m-label">1 · Old bin</label>
@@ -863,10 +973,21 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
             disabled={!siteId}
             onClick={() => {
               setCam(false)
-              setAdd(true)
+              setAddInitial(null)
+              setPanel('add')
             }}
           >
             Add a bin
+          </button>
+          <button
+            className="m-btn ghost"
+            disabled={!siteId}
+            onClick={() => {
+              setPanel('reprint')
+              setTimeout(() => reRef.current?.focus(), 0)
+            }}
+          >
+            Reprint
           </button>
         </div>
       </div>

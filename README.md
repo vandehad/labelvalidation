@@ -272,6 +272,16 @@ wrong-way-round gate applies.
 - It needs HTTPS. `getUserMedia` refuses on plain http, so `npm run dev` on a
   phone will say the camera could not be opened; the Vercel deployment is fine.
 
+### Reprinting a label
+
+**Reprint** on `/scan` (and the *Reprint* link on `/wm`) takes one scan: the
+new label itself, or the old bin id typed in. It looks the code up and queues
+it for the site's relay, and the verdict follows the job to *REPRINT ·
+PRINTED*. A new-format code the site does not hold is not refused — it opens
+Add-a-bin with the zone, aisle, column and shelf already picked from the code,
+because the usual reason is a shelf that was never in the plan. An old bin
+nothing has been paired to says so.
+
 ### Adding a bin from the aisle
 
 **Add a bin** on `/scan` is for a shelf that never had an old label. It is the
