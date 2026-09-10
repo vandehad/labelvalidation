@@ -20,12 +20,28 @@ import { zplBatch, DEFAULT_LABEL } from './zpl.ts'
 
 type Sql = ReturnType<typeof import('./db').db>
 
-export type JobStatus = 'queued' | 'printing' | 'done' | 'failed'
+/**
+ * held      created but not offered to any relay until someone releases it.
+ *           A long run is held in batches so it can be stopped between them:
+ *           once a batch is in the printer's buffer nothing can pull it back.
+ * queued    waiting for a relay to claim it. Cancel works here, but a relay
+ *           polls every couple of seconds, so in practice only just.
+ * printing  claimed; the relay is sending it.
+ */
+/**
+ * cancelled a stop asked for while printing. The relay feeds the printer in
+ *           pieces of ~50 labels and asks between pieces, so what is already
+ *           in the printer's buffer prints and nothing after it does.
+ */
+export type JobStatus = 'held' | 'queued' | 'printing' | 'done' | 'failed' | 'cancelled'
 
 export type Job = {
   id: number
   site_id: number
   labels: number
+  /** First and last code in the batch, so a held run reads as a sequence. */
+  first_code: string | null
+  last_code: string | null
   copies: number
   relay: string | null
   status: JobStatus
@@ -55,7 +71,7 @@ export const CHUNK = 500
 export const ONLINE_SECONDS = 45
 
 /** A job claimed this long ago and never finished goes back in the queue - the relay died mid-print. */
-export const STALE_MINUTES = 3
+export const STALE_MINUTES = 5
 
 /* ---------- pure helpers, tested ---------- */
 
@@ -168,6 +184,8 @@ export type QueueInput = {
   copies?: number
   /** Pin to one relay by name; null lets any relay signed in to the site take it. */
   relay?: string | null
+  /** Create the jobs held, to be released one at a time. */
+  hold?: boolean
   /**
    * ZPL already rendered by the caller (the desktop, with its stock and nudge
    * settings). Without it the site format is rendered here. Either way the
@@ -204,9 +222,10 @@ export async function queueJobs(sql: Sql, input: QueueInput): Promise<Job[]> {
   for (const codes of chunks) {
     const zpl = input.zpl ?? zplBatch(codes, { ...DEFAULT_LABEL, widthIn, copies })
     const rows = (await sql`
-      INSERT INTO print_jobs (site_id, codes, copies, zpl, relay, user_id)
-      VALUES (${input.siteId}, ${codes}, ${copies}, ${zpl}, ${relay}, ${input.userId})
-      RETURNING id, site_id, cardinality(codes)::int AS labels, copies, relay, status, error,
+      INSERT INTO print_jobs (site_id, codes, copies, zpl, relay, user_id, status)
+      VALUES (${input.siteId}, ${codes}, ${copies}, ${zpl}, ${relay}, ${input.userId}, ${input.hold ? 'held' : 'queued'})
+      RETURNING id, site_id, cardinality(codes)::int AS labels, codes[1] AS first_code,
+                codes[cardinality(codes)] AS last_code, copies, relay, status, error,
                 created_at, claimed_at, claimed_by, done_at`) as Array<Omit<Job, 'username'>>
     jobs.push({ ...rows[0], username: null })
   }
@@ -248,11 +267,21 @@ export async function claimNext(sql: Sql, siteId: number, name: string): Promise
   return rows[0] ?? null
 }
 
-export async function finishJob(sql: Sql, id: number, name: string, ok: boolean, error: string): Promise<boolean> {
+export async function finishJob(
+  sql: Sql,
+  id: number,
+  name: string,
+  ok: boolean,
+  error: string,
+  stopped = false,
+): Promise<boolean> {
+  // A job someone asked to stop stays 'cancelled' whatever the relay reports;
+  // the relay's note says how far it got.
+  const status = stopped ? 'cancelled' : ok ? 'done' : 'failed'
   const rows = (await sql`
     UPDATE print_jobs
-    SET status = ${ok ? 'done' : 'failed'}, error = ${ok ? null : error.slice(0, 500)}, done_at = now()
-    WHERE id = ${id} AND claimed_by = ${name} AND status = 'printing'
+    SET status = ${status}, error = ${ok && !stopped ? null : error.slice(0, 500)}, done_at = now()
+    WHERE id = ${id} AND claimed_by = ${name} AND status IN ('printing', 'cancelled')
     RETURNING site_id, codes, cardinality(codes)::int AS labels, copies`) as Array<{
     site_id: number
     codes: string[]
@@ -261,7 +290,7 @@ export async function finishJob(sql: Sql, id: number, name: string, ok: boolean,
   }>
   const job = rows[0]
   if (!job) return false
-  if (ok) {
+  if (ok && !stopped) {
     await sql`UPDATE labels SET printed_at = now() WHERE site_id = ${job.site_id} AND code = ANY(${job.codes})`
     await sql`UPDATE relays SET printed = printed + ${job.labels * job.copies} WHERE name = ${name}`
   }
@@ -270,9 +299,11 @@ export async function finishJob(sql: Sql, id: number, name: string, ok: boolean,
 
 /* ---------- what the screens show ---------- */
 
-export async function listJobs(sql: Sql, siteId: number, limit = 20): Promise<Job[]> {
+export async function listJobs(sql: Sql, siteId: number, limit = 80): Promise<Job[]> {
   return (await sql`
-    SELECT j.id, j.site_id, cardinality(j.codes)::int AS labels, j.copies, j.relay, j.status, j.error,
+    SELECT j.id, j.site_id, cardinality(j.codes)::int AS labels,
+           j.codes[1] AS first_code, j.codes[cardinality(j.codes)] AS last_code,
+           j.copies, j.relay, j.status, j.error,
            u.username, j.created_at, j.claimed_at, j.claimed_by, j.done_at
     FROM print_jobs j LEFT JOIN users u ON u.id = j.user_id
     WHERE j.site_id = ${siteId}
@@ -281,17 +312,61 @@ export async function listJobs(sql: Sql, siteId: number, limit = 20): Promise<Jo
 
 export async function jobById(sql: Sql, id: number): Promise<Job | null> {
   const rows = (await sql`
-    SELECT j.id, j.site_id, cardinality(j.codes)::int AS labels, j.copies, j.relay, j.status, j.error,
+    SELECT j.id, j.site_id, cardinality(j.codes)::int AS labels,
+           j.codes[1] AS first_code, j.codes[cardinality(j.codes)] AS last_code,
+           j.copies, j.relay, j.status, j.error,
            u.username, j.created_at, j.claimed_at, j.claimed_by, j.done_at
     FROM print_jobs j LEFT JOIN users u ON u.id = j.user_id
     WHERE j.id = ${id}`) as Job[]
   return rows[0] ?? null
 }
 
-/** Only a job nobody has started can be cancelled. */
-export async function cancelJob(sql: Sql, id: number): Promise<boolean> {
-  const rows = await sql`DELETE FROM print_jobs WHERE id = ${id} AND status = 'queued' RETURNING id`
+/**
+ * Cancel. Held or queued: gone, nothing reached a relay. Printing: marked
+ * cancelled, and the relay stops at its next piece boundary - 'stopping'.
+ */
+export async function cancelJob(sql: Sql, id: number): Promise<'gone' | 'stopping' | false> {
+  const gone = await sql`DELETE FROM print_jobs WHERE id = ${id} AND status IN ('held', 'queued') RETURNING id`
+  if (gone.length) return 'gone'
+  const stopping = await sql`
+    UPDATE print_jobs SET status = 'cancelled', error = 'Stop requested'
+    WHERE id = ${id} AND status = 'printing' RETURNING id`
+  return stopping.length ? 'stopping' : false
+}
+
+/**
+ * The relay asking, between pieces, whether to carry on. The ask also
+ * refreshes the claim: a 500-label batch paced at three a second runs close
+ * to three minutes, and without this `claimNext` would decide the relay had
+ * died and hand the same batch to another.
+ */
+export async function jobStatus(sql: Sql, id: number): Promise<JobStatus | null> {
+  const live = (await sql`
+    UPDATE print_jobs SET claimed_at = now() WHERE id = ${id} AND status = 'printing' RETURNING status`) as Array<{ status: JobStatus }>
+  if (live[0]) return live[0].status
+  const rows = (await sql`SELECT status FROM print_jobs WHERE id = ${id}`) as Array<{ status: JobStatus }>
+  return rows[0]?.status ?? null
+}
+
+/** Let one held job go to the relay. */
+export async function releaseJob(sql: Sql, id: number): Promise<boolean> {
+  const rows = await sql`UPDATE print_jobs SET status = 'queued' WHERE id = ${id} AND status = 'held' RETURNING id`
   return rows.length > 0
+}
+
+/** Release the oldest held job for a site - "next batch". Returns its id, or null when none is held. */
+export async function releaseNext(sql: Sql, siteId: number): Promise<number | null> {
+  const rows = (await sql`
+    UPDATE print_jobs SET status = 'queued'
+    WHERE id = (SELECT id FROM print_jobs WHERE site_id = ${siteId} AND status = 'held' ORDER BY id LIMIT 1)
+    RETURNING id`) as Array<{ id: number }>
+  return rows[0]?.id ?? null
+}
+
+/** Drop every held job for a site. Nothing here has reached a relay. */
+export async function cancelHeld(sql: Sql, siteId: number): Promise<number> {
+  const rows = await sql`DELETE FROM print_jobs WHERE site_id = ${siteId} AND status = 'held' RETURNING id`
+  return rows.length
 }
 
 export async function retryJob(sql: Sql, id: number): Promise<boolean> {

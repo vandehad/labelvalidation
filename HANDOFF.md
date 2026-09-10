@@ -221,6 +221,23 @@ variable, because a relay is set up by whoever is standing at that PC and the
 Admin tab is where they can read it from. The direct `localhost` path is kept
 as an option on the Print card for a laptop sitting beside the printer.
 
+**Multi-batch runs are held and released one batch at a time.** Cancel on a
+`queued` job only works in the seconds before a relay claims it, and once a
+500-label batch is in the printer's buffer it prints regardless - so "Cancel"
+looked broken. `print_jobs.status = 'held'` is a job no relay is offered;
+`claimNext` only ever takes `queued`. The Print card holds any run of more
+than one batch by default, shows the next batch's code range, and offers
+"Release next batch" and "Cancel all held". Single batches and the handheld's
+one-label jobs go straight out. And a batch that is printing can be stopped:
+the relay cuts the job at `^PQ` label blocks into pieces of 50 (`--piece`),
+asks `GET /api/print/[id]` with its key between pieces, and a `cancelled`
+status ends the job there, reported as "Stopped after N of M labels". The relay paces
+pieces at `--lps` labels a second (default 3) because a Zebra accepts a
+whole job into memory in a second; without pacing every piece would be in
+the buffer before the first check. Each check refreshes `claimed_at`, so a
+paced batch outlasting `STALE_MINUTES` is not re-queued to another relay. At
+most one piece is in the printer's buffer when Stop is pressed.
+
 **Every label states its width; the relay has no say.** The ZQ630 resets
 `ezpl.print_width` at every boot, `media.width_sense` is locked off, ZBI is
 disabled, and `^JUS`, SGD setvar and the Zebra config tool all failed to make
@@ -411,7 +428,7 @@ actual simultaneous case — two scan guns, one shelf — has not been staged.
   zone/aisle you are standing in; an audit accepts any bin at any time, because
   auditing tends to jump around. If audits turn out to want it too, `Loc` and
   `validatePair` are already there.
-- The relay polls every 15 s when idle, which keeps the Neon database awake
+- The relay polls every 5 s when idle, which keeps the Neon database awake
   while a relay window is open. Fine on a paid plan; on a free one, stop the
   relay when nobody is printing, or add a "pause" to it.
 - No site archiving, no delete, no per-site user assignment.

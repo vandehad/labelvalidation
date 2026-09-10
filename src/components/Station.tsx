@@ -857,6 +857,10 @@ function Print({ siteId }: { siteId: number }) {
   const [route, setRoute] = useState('queue')
   const [relays, setRelays] = useState<RelaySeen[]>([])
   const [jobs, setJobs] = useState<PrintJob[]>([])
+  // A run of more than one batch is held and released a batch at a time. A
+  // batch in the printer's buffer cannot be pulled back, so the place to stop
+  // a run that has gone wrong is before the next batch leaves the app.
+  const [hold, setHold] = useState(true)
   const [dpi, setDpi] = useState<203 | 300>(203)
   const [symbology, setSymbology] = useState<Symbology>('code39')
   // The site's own format is a 4in format - its padded 14-character symbol at
@@ -950,15 +954,29 @@ function Print({ siteId }: { siteId: number }) {
     return () => clearInterval(t)
   }, [loadQueue])
 
-  const jobAction = async (id: number, what: 'cancel' | 'retry') => {
+  const jobAction = async (id: number, what: 'cancel' | 'retry' | 'release') => {
     try {
-      if (what === 'cancel') await api(`/api/print/${id}`, { method: 'DELETE' })
-      else await api(`/api/print/${id}`, { method: 'POST', body: JSON.stringify({ action: 'retry' }) })
+      if (what === 'cancel') {
+        const r = await api(`/api/print/${id}`, { method: 'DELETE' })
+        if (r.result === 'stopping')
+          setMsg({ kind: 'warn', text: `Stopping job #${id}. The relay feeds the printer 50 labels at a time and checks between, so up to 50 more may come out.` })
+      } else await api(`/api/print/${id}`, { method: 'POST', body: JSON.stringify({ action: what }) })
       await loadQueue()
     } catch (e) {
       setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
     }
   }
+
+  const runAction = async (action: 'release-next' | 'cancel-held') => {
+    try {
+      const r = await api('/api/print', { method: 'PATCH', body: JSON.stringify({ siteId, action }) })
+      if (action === 'cancel-held') setMsg({ kind: 'ok', text: `Cancelled ${r.cancelled} held batch(es). Nothing of them reached a printer.` })
+      await loadQueue()
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    }
+  }
+  const held = jobs.filter(j => j.status === 'held')
 
   const check = async () => {
     setStatus(null)
@@ -988,6 +1006,7 @@ function Print({ siteId }: { siteId: number }) {
           : { mode: 'all' }
   const picked = pickCodes(codes ?? [], pick)
   const selected = picked.codes
+  const batches = Math.ceil(selected.length / 500)
 
   // Offer the zones the site actually holds, rather than a box to guess into.
   // Typing a zone that is not in the set returned nothing and said nothing,
@@ -1049,26 +1068,31 @@ function Print({ siteId }: { siteId: number }) {
       // The queue. The ZPL is rendered here, with this card's stock and nudge,
       // so what the relay prints is exactly what the preview describes.
       const pinned = route.startsWith('relay:') ? route.slice(6) : null
+      // One batch goes straight out. A run of several is held, so the first
+      // batch can be looked at before the second leaves the app.
+      const holding = hold && selected.length > CHUNK
       let n = 0
       let online: string[] = []
       for (let i = 0; i < selected.length; i += CHUNK) {
         const slice = selected.slice(i, i + CHUNK)
-        setMsg({ kind: 'warn', text: `Queuing ${Math.min(i + CHUNK, selected.length).toLocaleString()} of ${selected.length.toLocaleString()}…` })
+        setMsg({ kind: 'warn', text: `${holding ? 'Preparing' : 'Queuing'} ${Math.min(i + CHUNK, selected.length).toLocaleString()} of ${selected.length.toLocaleString()}…` })
         const r = await api('/api/print', {
           method: 'POST',
-          body: JSON.stringify({ siteId, codes: slice, copies: spec.copies, relay: pinned, zpl: zplBatch(slice, spec) }),
+          body: JSON.stringify({ siteId, codes: slice, copies: spec.copies, relay: pinned, hold: holding, zpl: zplBatch(slice, spec) }),
         })
         online = r.online
         n++
       }
       const total = (selected.length * spec.copies).toLocaleString()
       setMsg(
-        online.length
-          ? { kind: 'ok', text: `Queued ${total} label(s) in ${n} job(s). Printing at ${online.join(', ')} — progress below.` }
-          : {
-              kind: 'warn',
-              text: `Queued ${total} label(s) in ${n} job(s), but no relay is signed in to this site right now. They print as soon as one is: open print-server.exe, connect it with the key from the Admin tab, and pick this site.`,
-            },
+        holding
+          ? { kind: 'ok', text: `${total} label(s) prepared in ${n} batches, all held. Release them one at a time below - nothing goes to the printer until you do.` }
+          : online.length
+            ? { kind: 'ok', text: `Queued ${total} label(s). Printing at ${online.join(', ')} — progress below.` }
+            : {
+                kind: 'warn',
+                text: `Queued ${total} label(s), but no relay is signed in to this site right now. They print as soon as one is: open print-server.exe, connect it with the key from the Admin tab, and pick this site.`,
+              },
       )
       await loadQueue()
     } catch (e) {
@@ -1281,7 +1305,28 @@ function Print({ siteId }: { siteId: number }) {
           Download .zpl
         </button>
         {busy && <span className="spin" />}
+        {route !== 'direct' && batches > 1 && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, textTransform: 'none', letterSpacing: 0 }}>
+            <input type="checkbox" checked={hold} onChange={e => setHold(e.target.checked)} />
+            Hold the {batches} batches; release one at a time
+          </label>
+        )}
       </div>
+
+      {held.length > 0 && (
+        <div className="msg show warn" style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span>
+            <b>{held.length}</b> batch{held.length === 1 ? '' : 'es'} held, {held.reduce((a, j) => a + j.labels * j.copies, 0).toLocaleString()} labels. Next up:{' '}
+            <code>{held[held.length - 1].first_code}</code> → <code>{held[held.length - 1].last_code}</code>.
+          </span>
+          <button className="act" onClick={() => runAction('release-next')}>
+            Release next batch
+          </button>
+          <button className="act ghost" onClick={() => confirm(`Cancel all ${held.length} held batches? None of them has reached a printer.`) && runAction('cancel-held')}>
+            Cancel all held
+          </button>
+        </div>
+      )}
 
       {jobs.length > 0 && (
         <div className="scroll" style={{ marginTop: 12, maxHeight: 240 }}>
@@ -1304,18 +1349,34 @@ function Print({ siteId }: { siteId: number }) {
                   <td>
                     {j.labels.toLocaleString()}
                     {j.copies > 1 ? ` ×${j.copies}` : ''}
+                    {j.first_code && (
+                      <span className="hint" style={{ marginLeft: 6 }}>
+                        {j.first_code}
+                        {j.last_code && j.last_code !== j.first_code ? ` → ${j.last_code}` : ''}
+                      </span>
+                    )}
                   </td>
                   <td>
-                    <span className={`pill ${j.status === 'done' ? 'ok' : j.status === 'failed' ? 'bad' : 'warn'}`}>{j.status}</span>
+                    <span className={`pill ${j.status === 'done' ? 'ok' : j.status === 'failed' || j.status === 'cancelled' ? 'bad' : j.status === 'held' ? '' : 'warn'}`}>{j.status}</span>
                     {j.error ? ` ${j.error}` : ''}
                   </td>
                   <td>{j.claimed_by ?? j.relay ?? 'any'}</td>
                   <td>{j.username ?? ''}</td>
                   <td>{new Date(j.created_at).toLocaleTimeString()}</td>
                   <td>
-                    {j.status === 'queued' && (
+                    {j.status === 'held' && (
+                      <button className="act" style={{ marginRight: 6 }} onClick={() => jobAction(j.id, 'release')}>
+                        Release
+                      </button>
+                    )}
+                    {(j.status === 'queued' || j.status === 'held') && (
                       <button className="act ghost" onClick={() => jobAction(j.id, 'cancel')}>
                         Cancel
+                      </button>
+                    )}
+                    {j.status === 'printing' && (
+                      <button className="act ghost" onClick={() => jobAction(j.id, 'cancel')}>
+                        Stop
                       </button>
                     )}
                     {j.status === 'failed' && (

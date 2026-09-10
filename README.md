@@ -172,8 +172,30 @@ labels on their own printer; a second site needs its own relay (any PC, same
 key, different site). Several relays on one site share the work, and the Print
 card can pin a job to a named one.
 
-It polls every couple of seconds while there is work and every fifteen when
-idle. A job it fails on — printer off, cable out — is reported back with the
+**A run of more than one batch is held.** The Print card splits a run into
+batches of 500 and, by default, creates them *held*: they sit in the queue
+and are never offered to the relay until you press **Release next batch**.
+So the first 500 can come off the printer and be looked at before the second
+leaves the app, and if something is wrong **Cancel all held** drops the rest
+with nothing lost. This exists because the alternative is worse than it
+looks: cancelling a *queued* job only works in the two-second window before
+the relay claims it, and once a batch is in the printer's buffer nothing on
+our side can pull it back. Untick *Hold the batches* to send a run straight
+through.
+
+**A batch that is printing can be stopped.** The relay does not hand a batch
+to the printer whole. It cuts the ZPL at label boundaries into pieces of 50
+and, between pieces, asks the app whether the job has been cancelled. It also paces
+itself: a Zebra swallows a whole job into memory in a second, so the relay
+waits for each piece to print (about 3 labels a second, `--lps`) before the
+next goes into the buffer. **Stop** on a printing job therefore takes effect
+within one piece: what is already in the printer's buffer prints, up to 50
+labels, and nothing after it does. The
+job is marked *cancelled* with how far it got. Whole-batch sends were the
+reason Cancel looked broken: once 500 labels are in the buffer they print.
+
+It polls every couple of seconds while there is work and every five when
+idle, so a released batch starts within five seconds. A job it fails on — printer off, cable out — is reported back with the
 reason and can be retried from the Print card. A relay that dies mid-job loses
 nothing: after three minutes the job goes back in the queue.
 

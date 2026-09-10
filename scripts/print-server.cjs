@@ -80,7 +80,25 @@ const describe = () =>
 
 /* ---------------- the web app's print queue ---------------- */
 
-const VERSION = '2'
+const VERSION = '3'
+
+/**
+ * Labels per piece. A job goes to the printer in pieces this size, and the
+ * app is asked between pieces whether the job has been cancelled. Once bytes
+ * are in the printer's buffer nothing can pull them back, so this is the most
+ * that prints after someone presses Stop. About fifteen seconds of printing.
+ */
+const PIECE = Number(arg('piece') || saved.piece || 50)
+
+/**
+ * Labels per second the printer actually prints. A Zebra swallows a whole job
+ * into memory in a second, so "bytes accepted" says nothing about progress -
+ * the relay has to pace itself. Between pieces it waits this long for the
+ * piece just sent, checking for a stop as it waits. A GX420d at 4 ips on 1in
+ * labels does a little under 4/s; 3 leaves the buffer never more than about
+ * a piece ahead. Too low only means the printer idles briefly between pieces.
+ */
+const LPS = Math.max(0.5, Number(arg('lps') || saved.lps || 3))
 let link = {
   app: arg('app') || saved.app || 'https://labelvalidation.vercel.app',
   key: arg('key') || saved.key || '',
@@ -114,6 +132,58 @@ async function checkApp(use = link) {
   return d
 }
 
+/**
+ * Cut a job at label boundaries. Label blocks are the ^XA...^XZ blocks that
+ * carry a ^PQ; whatever precedes the first (the site preamble) rides with the
+ * first piece and whatever follows the last (a restore) with the last.
+ */
+function splitJob(zpl, per) {
+  const blocks = [...zpl.matchAll(/\^XA[\s\S]*?\^XZ/g)]
+  const labels = blocks.filter(m => m[0].includes('^PQ'))
+  if (labels.length <= per) return [{ zpl, labels: labels.length }]
+  const pieces = []
+  let cursor = 0
+  for (let i = per; i < labels.length; i += per) {
+    pieces.push({ zpl: zpl.slice(cursor, labels[i].index), labels: per })
+    cursor = labels[i].index
+  }
+  pieces.push({ zpl: zpl.slice(cursor), labels: labels.length - pieces.length * per })
+  return pieces
+}
+
+/** Between pieces: has anyone asked this job to stop? Unsure means carry on. */
+async function wantsStop(id) {
+  try {
+    const r = await appFetch('/api/print/' + id + '?relay=' + encodeURIComponent(link.name))
+    if (!r.ok) return false
+    const d = await r.json()
+    return d.status === 'cancelled'
+  } catch {
+    return false
+  }
+}
+
+/** Send a job piece by piece, pacing to the printer and looking up between pieces. */
+async function sendJob(job) {
+  const pieces = splitJob(job.zpl, PIECE)
+  let sent = 0
+  for (let i = 0; i < pieces.length; i++) {
+    await send(pieces[i].zpl)
+    sent += pieces[i].labels
+    if (i === pieces.length - 1) break
+    // Let the printer work through that piece before the next goes into its
+    // buffer. Every look also refreshes the job's claim, so a long paced
+    // batch is not mistaken for a dead relay and handed out again.
+    const until = Date.now() + (pieces[i].labels / LPS) * 1000
+    while (Date.now() < until) {
+      await new Promise(r => setTimeout(r, Math.min(2000, until - Date.now())))
+      if (await wantsStop(job.id)) return { stopped: true, sent }
+    }
+    if (await wantsStop(job.id)) return { stopped: true, sent }
+  }
+  return { stopped: false, sent }
+}
+
 /** One poll: take the next job for this site, print it, report back. */
 async function pollOnce() {
   const q =
@@ -126,25 +196,31 @@ async function pollOnce() {
 
   let ok = true
   let error = ''
+  let stopped = false
+  let sent = 0
+  const labels = (job.codes || []).length
   try {
-    // Sent as-is. The width is inside every label already - the Print card's
-    // stock choice put it there - so this has nothing to add.
-    await send(job.zpl)
+    // Sent as-is, in pieces. The width is inside every label already - the
+    // Print card's stock choice put it there - so this has nothing to add.
+    const r = await sendJob(job)
+    stopped = r.stopped
+    sent = r.sent
+    if (stopped) error = `Stopped after ${sent} of ${labels} labels`
   } catch (e) {
     ok = false
     error = e.message
   }
-  const labels = (job.codes || []).length
   const copies = job.copies || 1
-  queue.lastJob = { id: job.id, ok, error, labels, at: Date.now() }
-  if (ok) {
+  queue.lastJob = { id: job.id, ok: ok && !stopped, error, labels, at: Date.now() }
+  if (stopped) console.log(`  job #${job.id}: STOPPED after ${sent} of ${labels} label(s)`)
+  else if (ok) {
     queue.printed += labels * copies
     console.log(`  job #${job.id}: ${labels} label(s) x${copies} -> ${describe()}`)
   } else console.error(`  job #${job.id} FAILED: ${error}`)
 
   const done = await appFetch('/api/print/' + job.id + '?relay=' + encodeURIComponent(link.name), {
     method: 'POST',
-    body: JSON.stringify({ ok, error }),
+    body: JSON.stringify({ ok, error, stopped }),
   })
   if (!done.ok) console.error(`  could not report job #${job.id}: the app returned ` + done.status)
   return true
@@ -153,7 +229,7 @@ async function pollOnce() {
 let pollTimer = null
 async function pollLoop() {
   clearTimeout(pollTimer)
-  let delay = 15000
+  let delay = 5000
   if (!target.mode || !link.key || !link.site) {
     queue.state = 'off'
     queue.detail = !target.mode ? 'no printer chosen' : !link.key ? 'not connected to the app' : 'no site chosen'
@@ -167,9 +243,9 @@ async function pollLoop() {
       queue.lastPoll = Date.now()
       if (had) queue.lastWork = Date.now()
       // Straight back for the next one while there is work; every couple of
-      // seconds for a while after; then gently, so an idle relay does not
-      // keep the database awake for nothing.
-      delay = had ? 200 : Date.now() - queue.lastWork < 120000 ? 2000 : 15000
+      // seconds for a while after; then every five, which is as long as
+      // "Release next batch" should take to start printing.
+      delay = had ? 200 : Date.now() - queue.lastWork < 120000 ? 2000 : 5000
     } catch (e) {
       if (queue.detail !== e.message) console.error('  queue: ' + e.message)
       queue.state = 'error'
