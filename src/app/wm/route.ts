@@ -1,7 +1,7 @@
 import { db, isUniqueViolation } from '@/lib/db'
 import { currentUser, findUser, verifyPassword, sessionFor, setSessionCookie } from '@/lib/auth'
 import { verdictFor, normalizeScan, reversedScan, newCode, displayCode, validatePair } from '@/lib/bins'
-import { mintOptions, mintBin, checkPick, MintRefused } from '@/lib/mint'
+import { mintOptions, mintBin, adoptBin, checkPick, MintRefused } from '@/lib/mint'
 import { queueJobs, onlineRelays, QueueRefused } from '@/lib/printq'
 import { resolveLabel } from '@/lib/lookup'
 import { cookies } from 'next/headers'
@@ -154,6 +154,7 @@ ${banner}
 </form>
 <div class="foot">
 <a href="/wm?do=add">Add a bin</a> &nbsp;|&nbsp;
+${st.mode === 'pair' ? '<a href="/wm?do=noold">No old label</a> &nbsp;|&nbsp;' : ''}
 <a href="/wm?do=reprint">Reprint</a> &nbsp;|&nbsp;
 <a href="/wm?do=setup">Change job or site</a> &nbsp;|&nbsp; site ${st.site}, ${st.mode === 'pair' ? 'pairing' : st.source}
 </div>`,
@@ -278,6 +279,23 @@ function addedScreen(code: string, oldBin: string, tally: string, print: { colou
   )
 }
 
+/** A new label hung where there is no old label: scan it, it gets a placeholder. */
+function nooldScreen(err = '') {
+  return page(
+    'No old label',
+    `${bar('', 'NO OLD LABEL')}
+${err ? `<table><tr><td bgcolor="#a32020"><font color="#ffffff"><b>${esc(err)}</b></font></td></tr></table>` : ''}
+<form method="post" action="/wm">
+<input type="hidden" name="do" value="noold">
+<div class="lbl">NEW LABEL ON THE SHELF &nbsp; &mdash; scan it</div>
+<div><input class="scan" type="text" name="code"></div>
+<div style="padding:12px 8px"><input class="go" type="submit" value="Record">
+&nbsp;<a href="/wm">back to scanning</a></div>
+</form>
+<div class="foot">It is recorded with a placeholder old bin, so the shelf counts as paired.</div>`,
+  )
+}
+
 /**
  * Reprint: one field, the new label scanned or the old bin typed. A
  * new-format code the site does not hold goes to Add-a-bin with the cascade
@@ -369,6 +387,7 @@ export async function GET(req: Request) {
   }
 
   if (q.get('do') === 'reprint' && st) return reprintScreen()
+  if (q.get('do') === 'noold' && st) return nooldScreen()
 
   if (q.get('do') === 'setup' || !st) {
     const sql = db()
@@ -437,6 +456,21 @@ export async function POST(req: Request) {
     if (!rows[0]) return Response.redirect(new URL('/wm', req.url), 303)
     const print = await printOne(st.site, user.uid, code)
     return addedScreen(code, rows[0].old_bin, await tallyFor(st), print)
+  }
+
+  if (doing === 'noold') {
+    const raw = String(form.get('code') ?? '')
+    if (!normalizeScan(raw)) return nooldScreen()
+    try {
+      const made = await adoptBin(db(), st.site, user.uid, raw)
+      return oldScreen(
+        st,
+        { colour: '#1b7f4b', head: 'PAIRED - NO OLD LABEL', sub: `${displayCode(made.code)} recorded as ${made.oldBin}${made.added ? ', added to the set' : ''}.` },
+        await tallyFor(st),
+      )
+    } catch (e) {
+      return nooldScreen(e instanceof MintRefused ? e.message : e instanceof Error ? e.message : String(e))
+    }
   }
 
   if (doing === 'reprint') {

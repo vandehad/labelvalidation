@@ -1,7 +1,7 @@
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { json, fail } from '@/lib/api'
-import { mintOptions, mintBin, checkPick, MintRefused } from '@/lib/mint'
+import { mintOptions, mintBin, adoptBin, checkPick, MintRefused } from '@/lib/mint'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -35,6 +35,11 @@ export async function POST(req: Request) {
     const body = (await req.json()) as Record<string, unknown>
     const siteId = Number(body.siteId)
     if (!siteId) return json({ error: 'site is required' }, 400)
+    // A scanned code: the label is already hung and has no old label.
+    if (typeof body.code === 'string') {
+      const made = await adoptBin(db(), siteId, user.uid, body.code)
+      return json({ ...made, username: user.name }, 201)
+    }
     const pick = checkPick(body as never)
     const made = await mintBin(db(), siteId, user.uid, pick)
     return json({ ...made, username: user.name }, 201)

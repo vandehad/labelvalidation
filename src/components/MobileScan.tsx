@@ -292,7 +292,12 @@ function MobileAdd({
       </div>
 
       <div className={`m-code ${clash ? 'clash' : ''}`}>{code ? displayCode(code) : '— pick a shelf —'}</div>
-      {clash && <div className="m-sub">Already in the label set. Print and hang that one instead.</div>}
+      {clash && (
+        <div className="m-sub">
+          Already in the label set. If it is hung on a shelf with no old label, use <b>No old label</b> on the scan
+          screen instead - it records the pair with a placeholder.
+        </div>
+      )}
 
       <div className="m-row">
         <button className="m-btn" onClick={addBin} disabled={busy || !code || clash}>
@@ -327,7 +332,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   })
   // Which panel sits under the verdict: the scan fields, the add-a-bin
   // picker, or the reprint field.
-  const [panel, setPanel] = useState<'scan' | 'add' | 'reprint'>('scan')
+  const [panel, setPanel] = useState<'scan' | 'add' | 'reprint' | 'noold'>('scan')
   const add = panel === 'add'
   // Add-a-bin opened from a reprint of a code the site does not hold comes
   // with that code's zone, aisle, column and shelf already picked.
@@ -573,6 +578,10 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       void reprint(text)
       return
     }
+    if (panel === 'noold') {
+      void adopt(text)
+      return
+    }
     if (camStep === 'old') {
       camOld.current = text
       setOldBin(text)
@@ -679,6 +688,33 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const printMinted = (code: string, oldBin: string) =>
     watchPrint(code, `${displayCode(code)} is recorded as ${oldBin}. Hang it.`, 'ADDED')
 
+  // No old label: the new label is hung, there is nothing old to pair it to,
+  // and Add-a-bin refuses it because the code is already in the set. The pair
+  // is recorded with the next placeholder as its old bin; a code not in the
+  // set is added on the way. Back to scanning straight after.
+  const adopt = async (raw: string) => {
+    const scanned = normalizeScan(raw)
+    if (!scanned) return
+    setReBin('')
+    try {
+      const r = await api('/api/mint', { method: 'POST', body: JSON.stringify({ siteId, code: scanned }) })
+      setLastId(r.pairId)
+      setResult({
+        verdict: 'match',
+        text: 'PAIRED · NO OLD LABEL',
+        sub: `${displayCode(r.code)} is recorded as ${r.oldBin}${r.added ? ' and added to the label set' : ''}.`,
+      })
+      feedback(true)
+      void refresh()
+      setPanel('scan')
+      setTimeout(() => oldRef.current?.focus(), 0)
+    } catch (e) {
+      setResult({ verdict: 'mismatch', text: 'REFUSED', sub: e instanceof Error ? e.message : String(e) })
+      feedback(false)
+      setTimeout(() => reRef.current?.focus(), 0)
+    }
+  }
+
   // Reprint: the new label scanned, or the old bin typed. A new-format code
   // the site does not hold is not refused - it opens Add-a-bin with the
   // code's zone, aisle, column and shelf already picked, because the usual
@@ -740,7 +776,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   return (
     <div className="m-wrap">
       <div className="m-bar">
-        <b>{add ? 'ADD A BIN' : panel === 'reprint' ? 'REPRINT' : mode === 'pair' ? 'SCAN & PAIR' : 'VALIDATE'}</b>
+        <b>{add ? 'ADD A BIN' : panel === 'reprint' ? 'REPRINT' : panel === 'noold' ? 'NO OLD LABEL' : mode === 'pair' ? 'SCAN & PAIR' : 'VALIDATE'}</b>
         <span className="m-site">{site?.name ?? 'no site'}</span>
         <button className="m-gear" onClick={() => setSetup(v => !v)} aria-label="Settings">
           ⚙
@@ -825,6 +861,8 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
               <i>
                 {panel === 'reprint'
                   ? 'Next: point at the label to reprint'
+                  : panel === 'noold'
+                  ? 'Next: point at a new label with no old one'
                   : camStep === 'new'
                   ? 'Now point at the label hung on it'
                   : result.verdict === 'match'
@@ -834,7 +872,15 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
             </div>
           ) : (
             <div className="m-cam-verdict hint">
-              <b>{panel === 'reprint' ? 'Point at the label to reprint' : camStep === 'old' ? 'Point at the OLD label' : 'Now the label hung on it'}</b>
+              <b>
+                {panel === 'reprint'
+                  ? 'Point at the label to reprint'
+                  : panel === 'noold'
+                    ? 'Point at the NEW label on the shelf with no old one'
+                    : camStep === 'old'
+                      ? 'Point at the OLD label'
+                      : 'Now the label hung on it'}
+              </b>
             </div>
           )}
           <div className="m-cam-guide" />
@@ -858,9 +904,11 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
             setTimeout(() => oldRef.current?.focus(), 0)
           }}
         />
-      ) : panel === 'reprint' ? (
+      ) : panel === 'reprint' || panel === 'noold' ? (
         <div className="m-pad">
-          <label className="m-label">Scan the label to reprint, or type the old bin</label>
+          <label className="m-label">
+            {panel === 'noold' ? 'Scan the NEW label on the shelf that has no old label' : 'Scan the label to reprint, or type the old bin'}
+          </label>
           <input
             ref={reRef}
             className={`m-in scan ${reBin ? 'armed' : ''}`}
@@ -869,7 +917,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
             onKeyDown={e => {
               if (e.key !== 'Enter' && e.key !== 'Tab') return
               e.preventDefault()
-              void reprint(reBin)
+              void (panel === 'noold' ? adopt(reBin) : reprint(reBin))
             }}
             onDoubleClick={() => typeInto(reRef)}
             inputMode={typing ? 'text' : 'none'}
@@ -989,6 +1037,18 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           >
             Reprint
           </button>
+          {mode === 'pair' && (
+            <button
+              className="m-btn ghost"
+              disabled={!siteId}
+              onClick={() => {
+                setPanel('noold')
+                setTimeout(() => reRef.current?.focus(), 0)
+              }}
+            >
+              No old label
+            </button>
+          )}
         </div>
       </div>
       )}

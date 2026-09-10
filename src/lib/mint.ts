@@ -1,5 +1,5 @@
 import { isUniqueViolation } from './db'
-import { newCode, NEW_PATTERN, mintedOldBin } from './bins.ts'
+import { newCode, NEW_PATTERN, mintedOldBin, normalizeScan, splitNew } from './bins.ts'
 
 /**
  * Adding a bin that was never in the plan - the rules, once.
@@ -126,4 +126,55 @@ export async function mintBin(
     RETURNING id`) as Array<{ id: number }>
 
   return { code, oldBin, pairId: rows[0].id }
+}
+
+/**
+ * A shelf with a new label hung and no old label to pair it to.
+ *
+ * The label was printed from the set, so Add-a-bin refuses it as "taken" -
+ * but the pair still has to exist or reconcile lists the label as unused and
+ * the shelf becomes a bin nothing can find. This records the pair with the
+ * next placeholder as its old bin. If the code is not in the set at all it is
+ * added first, so one action covers a label from the run and one somebody
+ * made by hand. Refused only for a bad code, or a label already paired.
+ */
+export async function adoptBin(
+  sql: Sql,
+  siteId: number,
+  userId: number,
+  raw: string,
+): Promise<{ code: string; oldBin: string; pairId: number; added: boolean }> {
+  const code = normalizeScan(raw)
+  if (!NEW_PATTERN.test(code))
+    throw new MintRefused(`${code || 'That'} is not a new-format label. Scan the new label that is hung on the shelf.`, 422)
+  const p = splitNew(code)!
+
+  const seq = (await sql`SELECT nextval('minted_bin_seq')::int AS n`) as Array<{ n: number }>
+  const oldBin = mintedOldBin(seq[0].n)
+
+  const ins = (await sql`
+    INSERT INTO labels (site_id, code, zone, aisle, col, letter, origin, minted_by)
+    VALUES (${siteId}, ${code}, ${p.zone}, ${p.aisle}, ${p.col}, ${p.letter}, 'minted', ${userId})
+    ON CONFLICT (site_id, code) DO NOTHING RETURNING id`) as Array<{ id: number }>
+  const added = ins.length > 0
+
+  try {
+    const rows = (await sql`
+      INSERT INTO pairs (site_id, old_bin, new_bin, location, user_id, origin)
+      VALUES (${siteId}, ${oldBin}, ${code}, 'no old label', ${userId}, 'minted')
+      RETURNING id`) as Array<{ id: number }>
+    return { code, oldBin, pairId: rows[0].id, added }
+  } catch (e) {
+    if (added) await sql`DELETE FROM labels WHERE id = ${ins[0].id}`
+    if (isUniqueViolation(e)) {
+      const c = (await sql`
+        SELECT p.old_bin, u.username FROM pairs p LEFT JOIN users u ON u.id = p.user_id
+        WHERE p.site_id = ${siteId} AND p.new_bin = ${code} LIMIT 1`) as Array<{ old_bin: string; username: string | null }>
+      throw new MintRefused(
+        `${code} is already paired to ${c[0]?.old_bin ?? 'another bin'}${c[0]?.username ? ` (scanned by ${c[0].username})` : ''}.`,
+        409,
+      )
+    }
+    throw e
+  }
 }

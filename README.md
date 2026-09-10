@@ -294,6 +294,16 @@ wrong-way-round gate applies.
 - It needs HTTPS. `getUserMedia` refuses on plain http, so `npm run dev` on a
   phone will say the camera could not be opened; the Vercel deployment is fine.
 
+### A new label hung where there is no old label
+
+The label came off the run, so Add-a-bin calls it taken - but with nothing
+old to pair it to, the shelf would sit in reconcile as an unused label. **No
+old label** (on `/scan` in Scan & Pair, the desktop Scan & Pair tab, and `/wm`)
+takes one scan of the new label and records the pair with the next
+`NEW-000nnn` placeholder as its old bin, exactly as Add-a-bin does for a shelf
+that was never in the plan. A code not in the set is added on the way, so one
+button covers both. Refused only for a bad code or a label already paired.
+
 ### Reprinting a label
 
 **Reprint** on `/scan` (and the *Reprint* link on `/wm`) takes one scan: the

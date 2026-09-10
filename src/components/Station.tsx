@@ -471,6 +471,7 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
       </div>
 
       <AddBin siteId={siteId} onAdded={refresh} />
+      <NoOldLabel siteId={siteId} onAdded={refresh} />
 
       <div className="stats">
         <Stat n={totals.pairs.toLocaleString()} l="pairs captured" />
@@ -2763,6 +2764,89 @@ function AddBin({ siteId, onAdded }: { siteId: number; onAdded: () => void }) {
           Labels tab, <em>Added on the floor</em>.
         </p>
       )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * A new label hung on a shelf that has no old label. Add-a-bin refuses the
+ * code as "taken" - it came off the run - but the pair still has to exist.
+ * Scan the new label and it is recorded with the next placeholder old bin.
+ */
+function NoOldLabel({ siteId, onAdded }: { siteId: number; onAdded: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [code, setCode] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
+  const ref = useRef<HTMLInputElement>(null)
+
+  const go = async () => {
+    const c = normalizeScan(code)
+    if (!c) return
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await api('/api/mint', { method: 'POST', body: JSON.stringify({ siteId, code: c }) })
+      setMsg({ kind: 'ok', text: `${displayCode(r.code)} recorded as ${r.oldBin}${r.added ? ' and added to the label set' : ''}. Scan the next one, or close.` })
+      setCode('')
+      onAdded()
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setBusy(false)
+      setTimeout(() => ref.current?.select(), 0)
+    }
+  }
+
+  if (!open)
+    return (
+      <div className="card">
+        <h2>A new label hung where there is no old label</h2>
+        <p className="hint">
+          The label came off the run, so Add-a-bin calls it taken - but with nothing old to pair it to, the shelf
+          would show as an unused label. Scan it here and it is recorded with a placeholder old bin.
+        </p>
+        <button className="act ghost" onClick={() => { setOpen(true); setTimeout(() => ref.current?.focus(), 0) }}>
+          No old label
+        </button>
+      </div>
+    )
+
+  return (
+    <div className="card">
+      <h2>No old label</h2>
+      {msg && <div className={`msg show ${msg.kind}`}>{msg.text}</div>}
+      <div className="row" style={{ alignItems: 'flex-end' }}>
+        <div style={{ flex: '1 1 260px' }}>
+          <label>Scan the new label that is hung</label>
+          <input
+            ref={ref}
+            value={code}
+            onChange={e => setCode(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault()
+                void go()
+              }
+            }}
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            placeholder="scan…"
+            autoFocus
+          />
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="act" onClick={go} disabled={busy || !code.trim()}>
+            Record it
+          </button>
+          <button className="act ghost" onClick={() => setOpen(false)}>
+            Close
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
