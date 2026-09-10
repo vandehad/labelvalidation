@@ -21,6 +21,7 @@ import {
 import { readTable, parseDelimited } from '@/lib/sheet'
 import { zplBatch, barcodeData, type LabelSpec, type Symbology } from '@/lib/zpl'
 import type { Job as PrintJob, RelaySeen } from '@/lib/printq'
+import { describeReplaced } from '@/lib/repair'
 
 type User = { name: string; role: string }
 type Site = { id: number; name: string; status: string; labels: number; pairs: number }
@@ -285,6 +286,8 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
   const [pairs, setPairs] = useState<Pair[]>([])
   // What this session recorded last, so Undo cannot reach anyone else's row.
   const [lastPair, setLastPair] = useState<{ id: number; old_bin: string; new_bin: string } | null>(null)
+  // Repair: armed by hand, stays on until turned off by hand - see src/lib/repair.ts.
+  const [repair, setRepair] = useState(false)
   const [totals, setTotals] = useState<{ pairs: number; labels: number }>({ pairs: 0, labels: 0 })
   const [byUser, setByUser] = useState<Array<{ username: string; n: number }>>([])
   const [sound, setSound] = useState(true)
@@ -340,6 +343,23 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
     }
     setBusy(true)
     try {
+      if (repair) {
+        // One shot: whatever either bin was paired to goes, this pair goes in.
+        const r = await api('/api/pairs/repair', {
+          method: 'POST',
+          body: JSON.stringify({ siteId, oldBin: o, newBin: n, location: where.trim() || null }),
+        })
+        const gone = new Set((r.replaced as Array<{ old_bin: string }>).map(x => x.old_bin))
+        setPairs(p => [r.pair, ...p.filter(x => !gone.has(x.old_bin))])
+        setLastPair({ id: r.pair.id, old_bin: r.pair.old_bin, new_bin: r.pair.new_bin })
+        setTotals(t => ({ ...t, pairs: t.pairs + 1 - r.replaced.length }))
+        flash('ok', `REPAIRED — ${o}  →  ${n}. ${describeReplaced(r.replaced)}`)
+        beep(true)
+        setOldBin('')
+        setNewBin('')
+        oldRef.current?.focus()
+        return
+      }
       const { pair } = await api('/api/pairs', {
         method: 'POST',
         body: JSON.stringify({
@@ -465,6 +485,16 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
             >
               Clear
             </button>
+            <button
+              className={`act ${repair ? '' : 'ghost'}`}
+              title="While on, every old-then-new scan replaces whatever either was paired to. Click again to return to normal."
+              onClick={() => {
+                setRepair(v => !v)
+                oldRef.current?.focus()
+              }}
+            >
+              {repair ? 'REPAIR ON — click to return to normal' : 'Repair'}
+            </button>
             {busy && <span className="spin" />}
           </div>
         </div>
@@ -472,6 +502,7 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
 
       <AddBin siteId={siteId} onAdded={refresh} />
       <NoOldLabel siteId={siteId} onAdded={refresh} />
+      <Unpair siteId={siteId} onDone={refresh} />
 
       <div className="stats">
         <Stat n={totals.pairs.toLocaleString()} l="pairs captured" />
@@ -2847,6 +2878,80 @@ function NoOldLabel({ siteId, onAdded }: { siteId: number; onAdded: () => void }
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+
+/** Scan labels or old bins, one after another; each one's pair is removed. */
+function Unpair({ siteId, onDone }: { siteId: number; onDone: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [bin, setBin] = useState('')
+  const [log, setLog] = useState<Array<{ kind: string; text: string }>>([])
+  const ref = useRef<HTMLInputElement>(null)
+
+  const go = async () => {
+    const b = normalizeScan(bin)
+    if (!b) return
+    setBin('')
+    try {
+      const r = await api('/api/pairs/unpair', { method: 'POST', body: JSON.stringify({ siteId, bin: b }) })
+      setLog(l => [{ kind: 'ok', text: `${r.removed.old_bin}  →  ${r.removed.new_bin} removed` }, ...l].slice(0, 12))
+      onDone()
+    } catch (e) {
+      setLog(l => [{ kind: 'warn', text: e instanceof Error ? e.message : String(e) }, ...l].slice(0, 12))
+    } finally {
+      setTimeout(() => ref.current?.focus(), 0)
+    }
+  }
+
+  if (!open)
+    return (
+      <div className="card">
+        <h2>Unpair</h2>
+        <p className="hint">
+          The other way to fix a run scanned wrong: scan each label (or old bin) to remove its pair, then pair
+          them again as normal.
+        </p>
+        <button className="act ghost" onClick={() => { setOpen(true); setTimeout(() => ref.current?.focus(), 0) }}>
+          Unpair
+        </button>
+      </div>
+    )
+
+  return (
+    <div className="card">
+      <h2>Unpair</h2>
+      <div className="row" style={{ alignItems: 'flex-end' }}>
+        <div style={{ flex: '1 1 260px' }}>
+          <label>Scan a label or an old bin - each scan removes its pair</label>
+          <input
+            ref={ref}
+            value={bin}
+            onChange={e => setBin(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault()
+                void go()
+              }
+            }}
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            placeholder="scan…"
+            autoFocus
+          />
+        </div>
+        <button className="act ghost" onClick={() => setOpen(false)}>
+          Done
+        </button>
+      </div>
+      {log.map((m, i) => (
+        <div key={i} className={`msg show ${m.kind}`} style={{ marginTop: 6 }}>
+          {m.text}
+        </div>
+      ))}
     </div>
   )
 }

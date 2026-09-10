@@ -4,6 +4,7 @@ import { verdictFor, normalizeScan, reversedScan, newCode, displayCode, validate
 import { mintOptions, mintBin, adoptBin, checkPick, MintRefused } from '@/lib/mint'
 import { queueJobs, onlineRelays, QueueRefused } from '@/lib/printq'
 import { resolveLabel } from '@/lib/lookup'
+import { repairPair, unpair, describeReplaced, RepairRefused } from '@/lib/repair'
 import { cookies } from 'next/headers'
 
 export const dynamic = 'force-dynamic'
@@ -136,7 +137,7 @@ function setupScreen(sites: Array<{ id: number; name: string }>, cur: Step | nul
   )
 }
 
-function oldScreen(st: Step, verdict: { colour: string; head: string; sub: string } | null, tally: string) {
+function oldScreen(st: Step, verdict: { colour: string; head: string; sub: string } | null, tally: string, repair = false) {
   const banner = verdict
     ? `<table><tr><td bgcolor="${verdict.colour}"><font color="#ffffff">
 <div class="big">${esc(verdict.head)}</div><div class="sub">${esc(verdict.sub)}</div>
@@ -144,36 +145,39 @@ function oldScreen(st: Step, verdict: { colour: string; head: string; sub: strin
     : ''
   return page(
     'Scan old bin',
-    `${bar(tally, titleOf(st.mode))}
+    `${bar(tally, repair ? 'REPAIR' : titleOf(st.mode))}
 ${banner}
+${repair ? '<table><tr><td bgcolor="#8a6100"><font color="#ffffff"><b>REPAIR: scan the old bin, then the right new label. Whatever either was paired to is replaced.</b> &nbsp; <a href="/wm" style="color:#ffffff">done repairing</a></font></td></tr></table>' : ''}
 <form method="post" action="/wm">
 <input type="hidden" name="do" value="old">
+${repair ? '<input type="hidden" name="repair" value="1">' : ''}
 <div class="lbl">1 &nbsp; OLD BIN &nbsp; &mdash; scan it</div>
 <div><input class="scan" type="text" name="old"></div>
 <div style="padding:12px 8px"><input class="go" type="submit" value="Next"></div>
 </form>
 <div class="foot">
 <a href="/wm?do=add">Add a bin</a> &nbsp;|&nbsp;
-${st.mode === 'pair' ? '<a href="/wm?do=noold">No old label</a> &nbsp;|&nbsp;' : ''}
+${st.mode === 'pair' ? '<a href="/wm?do=noold">No old label</a> &nbsp;|&nbsp; <a href="/wm?do=repair">Repair</a> &nbsp;|&nbsp; <a href="/wm?do=unpair">Unpair</a> &nbsp;|&nbsp;' : ''}
 <a href="/wm?do=reprint">Reprint</a> &nbsp;|&nbsp;
 <a href="/wm?do=setup">Change job or site</a> &nbsp;|&nbsp; site ${st.site}, ${st.mode === 'pair' ? 'pairing' : st.source}
 </div>`,
   )
 }
 
-function newScreen(oldBin: string, err = '', mode: Mode = 'validate') {
+function newScreen(oldBin: string, err = '', mode: Mode = 'validate', repair = false) {
   return page(
     'Scan new label',
-    `${bar('', titleOf(mode))}
+    `${bar('', repair ? 'REPAIR' : titleOf(mode))}
 ${err ? `<table><tr><td bgcolor="#a32020"><font color="#ffffff"><b>${esc(err)}</b></font></td></tr></table>` : ''}
 <table><tr><td bgcolor="#e6f5ec"><b>OLD:</b> ${esc(oldBin)}</td></tr></table>
 <form method="post" action="/wm">
 <input type="hidden" name="do" value="new">
+${repair ? '<input type="hidden" name="repair" value="1">' : ''}
 <input type="hidden" name="old" value="${esc(oldBin)}">
 <div class="lbl">2 &nbsp; LABEL HUNG ON IT &nbsp; &mdash; scan it</div>
 <div><input class="scan" type="text" name="new"></div>
 <div style="padding:12px 8px">
-<input class="go" type="submit" value="${mode === 'pair' ? 'Pair' : 'Check'}">
+<input class="go" type="submit" value="${repair ? 'Repair' : mode === 'pair' ? 'Pair' : 'Check'}">
 &nbsp;<a href="/wm">start over</a>
 </div>
 </form>`,
@@ -276,6 +280,23 @@ function addedScreen(code: string, oldBin: string, tally: string, print: { colou
 &nbsp;&nbsp;<a href="/wm?do=add">add another</a>
 </div>
 </form>`,
+  )
+}
+
+/** Unpair: each scan removes a pair; stays on the screen for a list. */
+function unpairScreen(note: { colour: string; text: string } | null = null) {
+  return page(
+    'Unpair',
+    `${bar('', 'UNPAIR')}
+${note ? `<table><tr><td bgcolor="${note.colour}"><font color="#ffffff"><b>${esc(note.text)}</b></font></td></tr></table>` : ''}
+<form method="post" action="/wm">
+<input type="hidden" name="do" value="unpair">
+<div class="lbl">LABEL OR OLD BIN &nbsp; &mdash; scan it to remove its pair</div>
+<div><input class="scan" type="text" name="bin"></div>
+<div style="padding:12px 8px"><input class="go" type="submit" value="Unpair">
+&nbsp;<a href="/wm">back to scanning</a></div>
+</form>
+<div class="foot">Both sides of a removed pair are free to scan again as normal.</div>`,
   )
 }
 
@@ -388,6 +409,8 @@ export async function GET(req: Request) {
 
   if (q.get('do') === 'reprint' && st) return reprintScreen()
   if (q.get('do') === 'noold' && st) return nooldScreen()
+  if (q.get('do') === 'repair' && st) return oldScreen(st, null, await tallyFor(st), true)
+  if (q.get('do') === 'unpair' && st) return unpairScreen()
 
   if (q.get('do') === 'setup' || !st) {
     const sql = db()
@@ -458,6 +481,17 @@ export async function POST(req: Request) {
     return addedScreen(code, rows[0].old_bin, await tallyFor(st), print)
   }
 
+  if (doing === 'unpair') {
+    const raw = String(form.get('bin') ?? '')
+    if (!normalizeScan(raw)) return unpairScreen()
+    const removed = await unpair(db(), st.site, raw)
+    return unpairScreen(
+      removed
+        ? { colour: '#1b7f4b', text: `${removed.old_bin} -> ${removed.new_bin} removed. Both are free to scan again.` }
+        : { colour: '#8a6100', text: `${normalizeScan(raw)} is not paired to anything.` },
+    )
+  }
+
   if (doing === 'noold') {
     const raw = String(form.get('code') ?? '')
     if (!normalizeScan(raw)) return nooldScreen()
@@ -497,20 +531,38 @@ export async function POST(req: Request) {
   // Step one: the old label. One field, so Enter from the wedge lands here.
   if (doing === 'old') {
     const oldBin = normalizeScan(String(form.get('old') ?? ''))
-    if (!oldBin) return oldScreen(st, null, await tallyFor(st))
-    return newScreen(oldBin, '', st.mode)
+    const repair = form.get('repair') === '1' && st.mode === 'pair'
+    if (!oldBin) return oldScreen(st, null, await tallyFor(st), repair)
+    return newScreen(oldBin, '', st.mode, repair)
   }
 
   // Step two: the label hung on it, and the answer.
   if (doing === 'new') {
     const oldBin = normalizeScan(String(form.get('old') ?? ''))
     const newBin = normalizeScan(String(form.get('new') ?? ''))
-    if (!newBin) return newScreen(oldBin, '', st.mode)
-    if (oldBin === newBin) return newScreen(oldBin, 'Both fields read the same code.', st.mode)
+    const repair = form.get('repair') === '1' && st.mode === 'pair'
+    if (!newBin) return newScreen(oldBin, '', st.mode, repair)
+    if (oldBin === newBin) return newScreen(oldBin, 'Both fields read the same code.', st.mode, repair)
     const backwards = reversedScan(oldBin, newBin)
-    if (backwards) return newScreen(oldBin, backwards, st.mode)
+    if (backwards) return newScreen(oldBin, backwards, st.mode, repair)
 
     const sql = db()
+
+    // Repair: the explicit override. Whatever either bin was paired to goes.
+    if (repair) {
+      try {
+        const r = await repairPair(sql, st.site, user.uid, oldBin, newBin, 'wm repaired')
+        return oldScreen(
+          st,
+          { colour: '#1b7f4b', head: 'REPAIRED', sub: `${oldBin} -> ${newBin}. ${describeReplaced(r.replaced)}` },
+          await tallyFor(st),
+          true, // still repairing until "done repairing"
+        )
+      } catch (e) {
+        if (e instanceof RepairRefused) return newScreen(oldBin, e.message, 'pair', true)
+        throw e
+      }
+    }
 
     // Pairing: refused up front. The format gate first, then the database's
     // one-for-one constraints - the same rules as /api/pairs, because a pair

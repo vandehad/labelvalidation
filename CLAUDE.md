@@ -20,6 +20,9 @@ npm run user -- <name> <password> [scanner|admin]
 - **One-for-one is enforced by Postgres**, not application code. `pairs` has
   `UNIQUE (site_id, old_bin)` and `UNIQUE (site_id, new_bin)`. Never replace
   that with a read-then-write check — it races when two people scan at once.
+  `repairPair` is not an exception: it deletes whatever either bin was paired
+  to and inserts the new pair inside one transaction, with the constraints
+  still in force, and only while someone has Repair switched on by hand.
 - **Never derive the new bin letter from old data.** That is what produced 364
   bad codes at the previous site. Generate a superset, scan reality, delete the
   leftovers.

@@ -294,6 +294,22 @@ wrong-way-round gate applies.
 - It needs HTTPS. `getUserMedia` refuses on plain http, so `npm run dev` on a
   phone will say the camera could not be opened; the Vercel deployment is fine.
 
+### Repair: a shelf scanned wrong
+
+Scanned one shelf offset, so old A is paired to the label meant for the shelf
+beside it? Normal pairing refuses the fix twice over, correctly: the old bin
+is already paired, the label is already used. **Repair** is the explicit
+override. Arm it (a button beside Undo on `/scan` and the desktop Scan & Pair
+tab, a link on `/wm`), scan old then new as usual, and whatever either was
+paired to is removed and the pair as scanned goes in, in one transaction. It
+stays on while a run of shelves is put right - the header says REPAIR the whole
+time - and is turned off by hand to return to normal. Each verdict names what
+it displaced, because a wrong pair usually took a neighbour's label and that
+neighbour now needs re-scanning.
+
+**Unpair** is the other way: scan each label (or old bin) to remove its pair,
+then pair them again as normal. Normal mode is untouched by either.
+
 ### A new label hung where there is no old label
 
 The label came off the run, so Add-a-bin calls it taken - but with nothing

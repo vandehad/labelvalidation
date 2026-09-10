@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { displayCode, newCode, normalizeScan, reversedScan, validatePair, type Verdict } from '@/lib/bins'
 import { startCamera, cameraAvailable, type StopCamera } from '@/lib/camera'
 import type { RelaySeen } from '@/lib/printq'
+import { describeReplaced } from '@/lib/repair'
 
 /**
  * The handheld page - built for a Zebra TC52 in a warehouse aisle, and used
@@ -332,7 +333,11 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   })
   // Which panel sits under the verdict: the scan fields, the add-a-bin
   // picker, or the reprint field.
-  const [panel, setPanel] = useState<'scan' | 'add' | 'reprint' | 'noold'>('scan')
+  const [panel, setPanel] = useState<'scan' | 'add' | 'reprint' | 'noold' | 'unpair'>('scan')
+  // Repair: armed by hand, stays armed while a run of shelves is put right,
+  // and is turned off by hand. While armed every old-then-new scan replaces
+  // whatever either was paired to; the header says REPAIR the whole time.
+  const [repair, setRepair] = useState(false)
   const add = panel === 'add'
   // Add-a-bin opened from a reprint of a code the site does not hold comes
   // with that code's zone, aisle, column and shelf already picked.
@@ -511,9 +516,15 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       }
       setBusy(true)
       try {
-        const { pair } = await api('/api/pairs', { method: 'POST', body: JSON.stringify({ siteId, oldBin: o, newBin: n }) })
-        setLastId(pair.id)
-        setResult({ verdict: 'match', text: 'PAIRED', sub: `${o}  →  ${n}` })
+        if (repair) {
+          const r = await api('/api/pairs/repair', { method: 'POST', body: JSON.stringify({ siteId, oldBin: o, newBin: n }) })
+          setLastId(r.pair.id)
+          setResult({ verdict: 'match', text: 'REPAIRED', sub: `${o}  →  ${n}. ${describeReplaced(r.replaced)}` })
+        } else {
+          const { pair } = await api('/api/pairs', { method: 'POST', body: JSON.stringify({ siteId, oldBin: o, newBin: n }) })
+          setLastId(pair.id)
+          setResult({ verdict: 'match', text: 'PAIRED', sub: `${o}  →  ${n}` })
+        }
         feedback(true)
         await refresh()
       } catch (e) {
@@ -580,6 +591,10 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
     }
     if (panel === 'noold') {
       void adopt(text)
+      return
+    }
+    if (panel === 'unpair') {
+      void unpairOne(text)
       return
     }
     if (camStep === 'old') {
@@ -715,6 +730,30 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
     }
   }
 
+  // Unpair: scan labels or old bins, one after another, and each one's pair
+  // is removed so both sides can be scanned again as normal. Stays on the
+  // panel - it is for a list.
+  const unpairOne = async (raw: string) => {
+    const scanned = normalizeScan(raw)
+    if (!scanned) return
+    setReBin('')
+    try {
+      const r = await api('/api/pairs/unpair', { method: 'POST', body: JSON.stringify({ siteId, bin: scanned }) })
+      setResult({
+        verdict: 'unmapped',
+        text: 'UNPAIRED',
+        sub: `${r.removed.old_bin}  →  ${r.removed.new_bin} removed. Both are free to scan again. Next label, or Back to scanning.`,
+      })
+      feedback(true)
+      void refresh()
+    } catch (e) {
+      setResult({ verdict: 'error', text: 'NOT PAIRED', sub: e instanceof Error ? e.message : String(e) })
+      feedback(false)
+    } finally {
+      setTimeout(() => reRef.current?.focus(), 0)
+    }
+  }
+
   // Reprint: the new label scanned, or the old bin typed. A new-format code
   // the site does not hold is not refused - it opens Add-a-bin with the
   // code's zone, aisle, column and shelf already picked, because the usual
@@ -776,7 +815,21 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   return (
     <div className="m-wrap">
       <div className="m-bar">
-        <b>{add ? 'ADD A BIN' : panel === 'reprint' ? 'REPRINT' : panel === 'noold' ? 'NO OLD LABEL' : mode === 'pair' ? 'SCAN & PAIR' : 'VALIDATE'}</b>
+        <b>
+          {add
+            ? 'ADD A BIN'
+            : panel === 'reprint'
+              ? 'REPRINT'
+              : panel === 'noold'
+                ? 'NO OLD LABEL'
+                : panel === 'unpair'
+                  ? 'UNPAIR'
+                  : mode === 'pair'
+                  ? repair
+                    ? 'REPAIR'
+                    : 'SCAN & PAIR'
+                  : 'VALIDATE'}
+        </b>
         <span className="m-site">{site?.name ?? 'no site'}</span>
         <button className="m-gear" onClick={() => setSetup(v => !v)} aria-label="Settings">
           ⚙
@@ -841,7 +894,12 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       <div className={`m-verdict ${result?.verdict ?? 'idle'}`}>
         <span className="m-big">{result?.text ?? 'READY'}</span>
         <span className="m-sub">
-          {result?.sub ?? (mode === 'pair' ? 'Scan the old label, then the new one you hung on it.' : 'Scan the old label, then the one hung on it.')}
+          {result?.sub ??
+            (mode === 'pair'
+              ? repair
+                ? 'REPAIR armed: scan the old label, then the right new one. Whatever either was paired to is replaced.'
+                : 'Scan the old label, then the new one you hung on it.'
+              : 'Scan the old label, then the one hung on it.')}
         </span>
       </div>
       )}
@@ -863,6 +921,8 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
                   ? 'Next: point at the label to reprint'
                   : panel === 'noold'
                   ? 'Next: point at a new label with no old one'
+                  : panel === 'unpair'
+                  ? 'Next: point at another label to unpair'
                   : camStep === 'new'
                   ? 'Now point at the label hung on it'
                   : result.verdict === 'match'
@@ -877,6 +937,8 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
                   ? 'Point at the label to reprint'
                   : panel === 'noold'
                     ? 'Point at the NEW label on the shelf with no old one'
+                    : panel === 'unpair'
+                      ? 'Point at a label (or old bin) to unpair'
                     : camStep === 'old'
                       ? 'Point at the OLD label'
                       : 'Now the label hung on it'}
@@ -904,10 +966,14 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
             setTimeout(() => oldRef.current?.focus(), 0)
           }}
         />
-      ) : panel === 'reprint' || panel === 'noold' ? (
+      ) : panel === 'reprint' || panel === 'noold' || panel === 'unpair' ? (
         <div className="m-pad">
           <label className="m-label">
-            {panel === 'noold' ? 'Scan the NEW label on the shelf that has no old label' : 'Scan the label to reprint, or type the old bin'}
+            {panel === 'noold'
+              ? 'Scan the NEW label on the shelf that has no old label'
+              : panel === 'unpair'
+                ? 'Scan each label (or old bin) to unpair, then go back and re-pair'
+                : 'Scan the label to reprint, or type the old bin'}
           </label>
           <input
             ref={reRef}
@@ -917,7 +983,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
             onKeyDown={e => {
               if (e.key !== 'Enter' && e.key !== 'Tab') return
               e.preventDefault()
-              void (panel === 'noold' ? adopt(reBin) : reprint(reBin))
+              void (panel === 'noold' ? adopt(reBin) : panel === 'unpair' ? unpairOne(reBin) : reprint(reBin))
             }}
             onDoubleClick={() => typeInto(reRef)}
             inputMode={typing ? 'text' : 'none'}
@@ -982,6 +1048,30 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           <button className="m-btn ghost" onClick={undo} disabled={busy || !lastId}>
             Undo last
           </button>
+          {mode === 'pair' && (
+            <button
+              className={`m-btn ${repair ? '' : 'ghost'}`}
+              onClick={() => {
+                setRepair(v => !v)
+                setResult(null)
+                oldRef.current?.focus()
+              }}
+            >
+              {repair ? 'Done repairing' : 'Repair'}
+            </button>
+          )}
+          {mode === 'pair' && (
+            <button
+              className="m-btn ghost"
+              disabled={!siteId}
+              onClick={() => {
+                setPanel('unpair')
+                setTimeout(() => reRef.current?.focus(), 0)
+              }}
+            >
+              Unpair
+            </button>
+          )}
           <button
             className={`m-btn ${typing ? '' : 'ghost'}`}
             onClick={() => {
