@@ -118,6 +118,15 @@ export type ZoneBlock = {
 export type GenSpec =
   | { mode: 'derive'; oldBins: string[]; basis: Basis; zMode: ZMode }
   | { mode: 'blocks'; blocks: ZoneBlock[]; zMode: ZMode }
+  /**
+   * An explicit list of codes. The grid modes describe racks - a run of
+   * aisles, so many columns each - and some real shelves do not sit on that
+   * grid: site 7's WMS keeps a floor or end-cap position per aisle at its
+   * column 88, which becomes column 00 or 99 in one aisle at a time. Listing
+   * the codes says that without inventing aisles to hold them. Nothing is
+   * derived here; every code is still checked against NEW_PATTERN.
+   */
+  | { mode: 'codes'; codes: string[] }
   | {
       mode: 'manual'
       zones: string[]
@@ -158,6 +167,40 @@ export function generateLabels(spec: GenSpec): GenResult {
   // Two digits is the ceiling on both counts: a third would change the length
   // of every code in the system.
   const clampPos = (n: unknown) => Math.min(99, Math.max(1, Math.floor(Number(n) || 1)))
+
+  // The one mode with no grid behind it: the codes are the answer. Checked,
+  // uppercased, deduplicated, and anything malformed is reported rather than
+  // stored - a typo here would put a bin on a rack that nothing can find.
+  if (spec.mode === 'codes') {
+    const good: string[] = []
+    for (const raw of spec.codes) {
+      const c = String(raw ?? '').trim().toUpperCase()
+      if (!c) continue
+      if (NEW_PATTERN.test(c)) good.push(c)
+      else unparsed.push(c)
+    }
+    if (unparsed.length)
+      problems.push(`${unparsed.length} entr${unparsed.length === 1 ? 'y is' : 'ies are'} not a valid bin code and ${unparsed.length === 1 ? 'was' : 'were'} skipped: ${unparsed.slice(0, 6).join(', ')}${unparsed.length > 6 ? '…' : ''}`)
+    const unique = [...new Set(good)].sort()
+    if (unique.length !== good.length)
+      problems.push(`${good.length - unique.length} code(s) were listed more than once and collapsed.`)
+    const parts = unique.map(c => splitNew(c)!).filter(Boolean)
+    const perCol = new Map<string, Set<string>>()
+    for (const p of parts) {
+      const k = `${p.zone}|${p.aisle}|${p.col}`
+      const set = perCol.get(k) ?? perCol.set(k, new Set()).get(k)!
+      set.add(p.letter)
+    }
+    return {
+      labels: unique,
+      columns: perCol.size,
+      zones: new Set(parts.map(p => p.zone)).size,
+      tallest: perCol.size ? Math.max(...[...perCol.values()].map(s => s.size)) : 0,
+      capped: [],
+      unparsed,
+      problems,
+    }
+  }
 
   if (spec.mode === 'derive') {
     const map = new Map<string, { zone: string; aisle: number; col: number; shelves: Set<number>; floor: boolean }>()

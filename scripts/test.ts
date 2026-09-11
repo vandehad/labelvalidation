@@ -572,6 +572,23 @@ ok('the separator is configurable', displayCode('A0000A01', ' - ') === 'A00 - 00
   ok('the default chunk is one job per 500', chunkCodes(Array.from({ length: 1001 }, (_, i) => `A${String(i).padStart(4, '0')}A01`)).length === 3)
 }
 
+/* ---------- generating from an explicit list of codes ---------- */
+// For shelves the grid cannot express: site 7's WMS keeps a floor position
+// per aisle at its column 88, which becomes column 00 or 99 on its own.
+{
+  const g = generateLabels({ mode: 'codes', codes: ['A1000A01', 'a1099a01', ' D2800A01 ', 'A1000A01', '', 'A10-00A01', 'nonsense'] })
+  ok('valid codes are kept, uppercased and trimmed', g.labels.join(',') === 'A1000A01,A1099A01,D2800A01')
+  ok('a duplicate collapses and is reported', g.problems.some(p => /listed more than once/.test(p)))
+  ok('a dashed code is refused - the barcode is never dashed', g.unparsed.includes('A10-00A01'))
+  ok('nonsense is refused, not stored', g.unparsed.includes('NONSENSE') && !g.labels.includes('NONSENSE'))
+  ok('and the refusals are reported in words', g.problems.some(p => /not a valid bin code/.test(p)))
+  ok('column 00 survives the round trip', splitNew('A1000A01')?.col === 0 && splitNew('A1099A01')?.col === 99)
+  ok('stats count columns, zones and the tallest column', g.columns === 3 && g.zones === 2 && g.tallest === 1)
+  ok('an empty list produces nothing rather than throwing', generateLabels({ mode: 'codes', codes: [] }).labels.length === 0)
+  const two = generateLabels({ mode: 'codes', codes: ['A1000A01', 'A1000B01'] })
+  ok('two shelves in one column make it two tall', two.columns === 1 && two.tallest === 2)
+}
+
 /* ---------- the WMS old-bin list: one comparable form ---------- */
 ok('WMS id is its own canon', canonOld('01-09-03-05') === '01-09-03-05')
 ok('a scan without leading zeros pads to it', canonOld('1-9-3-5') === '01-09-03-05')
