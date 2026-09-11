@@ -145,7 +145,7 @@ function Login({ onIn }: { onIn: (u: User) => void }) {
 /* ------------------------------------------------------------------ */
 
 function Main({ user, onOut }: { user: User; onOut: () => void }) {
-  const [tab, setTab] = useState<'scan' | 'val' | 'labels' | 'rec' | 'admin'>('scan')
+  const [tab, setTab] = useState<'scan' | 'val' | 'labels' | 'rec' | 'summary' | 'admin'>('scan')
   const [sites, setSites] = useState<Site[]>([])
   const [siteId, setSiteId] = useState<number | null>(null)
   const [err, setErr] = useState('')
@@ -244,6 +244,9 @@ function Main({ user, onOut }: { user: User; onOut: () => void }) {
         <button className={tab === 'rec' ? 'on' : ''} onClick={() => setTab('rec')}>
           Reconcile
         </button>
+        <button className={tab === 'summary' ? 'on' : ''} onClick={() => setTab('summary')}>
+          Summary
+        </button>
         {user.role === 'admin' && (
           <button className={tab === 'admin' ? 'on' : ''} onClick={() => setTab('admin')}>
             Admin
@@ -268,6 +271,8 @@ function Main({ user, onOut }: { user: User; onOut: () => void }) {
           <Validate siteId={siteId} siteName={sites.find(s => s.id === siteId)?.name ?? ''} user={user} />
         ) : tab === 'labels' ? (
           <Labels siteId={siteId} user={user} stored={sites.find(s => s.id === siteId)?.labels ?? 0} onDone={loadSites} />
+        ) : tab === 'summary' ? (
+          <Summary siteId={siteId} />
         ) : (
           <Reconcile siteId={siteId} />
         )}
@@ -1466,6 +1471,258 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
         </p>
       )}
     </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+
+type SummaryData = {
+  totals: {
+    pairs: number
+    minted: number
+    labels: number
+    wms: number
+    wms_paired: number
+    checks: number
+    mismatches: number
+    first_pair: string | null
+    last_pair: string | null
+    exceptions: number
+    additional: number
+  }
+  byZone: Array<{ zone: string; total: number; paired: number }>
+  perHour: Array<{ hour: string; n: number }>
+  perDay: Array<{ day: string; n: number; active_hours: number; people: number }>
+  byUser: Array<{ username: string; pairs: number; last_hour: number; today: number; active_hours: number; last_seen: string }>
+  rate: { lastHour: number; last8h: number; activeHours: number; avgPerActiveHour: number; hoursLeft: number | null }
+}
+
+/** A share of a whole as a thin bar: one hue for the part, the track for the rest. Text carries the number. */
+function Share({ part, whole, label }: { part: number; whole: number; label?: string }) {
+  const pct = whole ? Math.round((part / whole) * 100) : 0
+  return (
+    <div className="share" title={label ?? `${part.toLocaleString()} of ${whole.toLocaleString()} (${pct}%)`}>
+      <div className="share-track">
+        <div className="share-fill" style={{ width: `${pct}%` }} />
+      </div>
+      <span className="share-pct">{pct}%</span>
+    </div>
+  )
+}
+
+/**
+ * The Summary tab: how the conversion is going, against the WMS list.
+ *
+ * Progress by WMS zone, pace in pairs per hour, and who is doing it. Every
+ * chart is one hue on a neutral track with the number in text beside it,
+ * and every chart has its table underneath - the bars are for the glance,
+ * the table is for the answer.
+ */
+function Summary({ siteId }: { siteId: number }) {
+  const [d, setD] = useState<SummaryData | null>(null)
+  const [err, setErr] = useState('')
+  const load = useCallback(async () => {
+    try {
+      setD(await api(`/api/summary?site=${siteId}`))
+      setErr('')
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
+  }, [siteId])
+  useEffect(() => {
+    void load()
+    const t = setInterval(() => void load(), 30000)
+    return () => clearInterval(t)
+  }, [load])
+
+  if (err) return <div className="msg show bad">{err}</div>
+  if (!d) return <div className="card">Loading…</div>
+
+  const t = d.totals
+  const toGo = t.wms - t.wms_paired
+  const pct = t.wms ? Math.round((t.wms_paired / t.wms) * 100) : 0
+  const fmtHour = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: 'short', hour: 'numeric' })
+  const fmtDay = (iso: string) => new Date(iso).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+
+  // The last 48 hours, hour by hour, with quiet hours shown as empty so the
+  // shape of the day reads - a run of tall bars, a night of nothing.
+  const hours: Array<{ hour: Date; n: number }> = []
+  const byHour = new Map(d.perHour.map(h => [new Date(h.hour).getTime(), h.n]))
+  const end = new Date()
+  end.setMinutes(0, 0, 0)
+  for (let i = 47; i >= 0; i--) {
+    const h = new Date(end.getTime() - i * 3600_000)
+    hours.push({ hour: h, n: byHour.get(h.getTime()) ?? 0 })
+  }
+  const peak = Math.max(1, ...hours.map(h => h.n))
+
+  return (
+    <>
+      <div className="stats">
+        {t.wms ? (
+          <>
+            <Stat n={`${t.wms_paired.toLocaleString()} / ${t.wms.toLocaleString()}`} l="WMS bins paired" />
+            <Stat n={toGo.toLocaleString()} l="to go" />
+            <Stat n={`${pct}%`} l="done" />
+          </>
+        ) : (
+          <Stat n={t.pairs.toLocaleString()} l="pairs (no WMS list loaded)" />
+        )}
+        <Stat n={d.rate.lastHour.toLocaleString()} l="pairs, last hour" />
+        <Stat n={d.rate.avgPerActiveHour.toFixed(0)} l="avg per active hour" />
+        <Stat
+          n={d.rate.hoursLeft === null ? '—' : d.rate.hoursLeft < 1 ? '< 1 h' : `${Math.ceil(d.rate.hoursLeft)} h`}
+          l="left at that pace"
+        />
+        <Stat n={t.exceptions.toLocaleString()} l="exceptions to repair" />
+        <Stat n={t.additional.toLocaleString()} l="bins not in WMS" />
+      </div>
+
+      <div className="split">
+        <div className="card">
+          <h2>By WMS zone</h2>
+          {!d.byZone.length ? (
+            <p className="hint">No WMS bin list is loaded for this site - load one on the Admin tab.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Zone</th>
+                  <th>WMS bins</th>
+                  <th>Paired</th>
+                  <th>To go</th>
+                  <th style={{ width: '40%' }}>Share paired</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.byZone.map(z => (
+                  <tr key={z.zone}>
+                    <td>
+                      <code>{z.zone}</code>
+                    </td>
+                    <td>{z.total.toLocaleString()}</td>
+                    <td>{z.paired.toLocaleString()}</td>
+                    <td className={z.total - z.paired ? '' : 'hint'}>{(z.total - z.paired).toLocaleString()}</td>
+                    <td>
+                      <Share part={z.paired} whole={z.total} />
+                    </td>
+                  </tr>
+                ))}
+                <tr>
+                  <th>All</th>
+                  <th>{t.wms.toLocaleString()}</th>
+                  <th>{t.wms_paired.toLocaleString()}</th>
+                  <th>{toGo.toLocaleString()}</th>
+                  <th>
+                    <Share part={t.wms_paired} whole={t.wms} />
+                  </th>
+                </tr>
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="card">
+          <h2>Pairs per hour — last 48 hours</h2>
+          <p className="hint">
+            {d.rate.last8h.toLocaleString()} in the last 8 hours. Average over the {d.rate.activeHours.toLocaleString()} hours anything was paired:{' '}
+            {d.rate.avgPerActiveHour.toFixed(1)} an hour.
+          </p>
+          <div className="hours" role="img" aria-label="Pairs per hour over the last 48 hours">
+            {hours.map(h => (
+              <div key={h.hour.getTime()} className="hour" title={`${fmtHour(h.hour.toISOString())}: ${h.n.toLocaleString()} pair(s)`}>
+                <div className="hour-bar" style={{ height: `${Math.round((h.n / peak) * 100)}%` }} />
+                {h.n === peak && h.n > 0 && <span className="hour-peak">{h.n}</span>}
+              </div>
+            ))}
+          </div>
+          <div className="hours-axis">
+            {hours.filter((_, i) => i % 12 === 0).map(h => (
+              <span key={h.hour.getTime()}>{fmtHour(h.hour.toISOString())}</span>
+            ))}
+            <span>now</span>
+          </div>
+          <details style={{ marginTop: 8 }}>
+            <summary className="hint">Table</summary>
+            <div className="scroll" style={{ maxHeight: 220 }}>
+              <table>
+                <tbody>
+                  {hours
+                    .filter(h => h.n)
+                    .reverse()
+                    .map(h => (
+                      <tr key={h.hour.getTime()}>
+                        <td>{fmtHour(h.hour.toISOString())}</td>
+                        <td>{h.n.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <div className="split">
+        <div className="card">
+          <h2>By person</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Who</th>
+                <th>Pairs</th>
+                <th>Today</th>
+                <th>Last hour</th>
+                <th>Per active hour</th>
+                <th>Last seen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {d.byUser.map(u => (
+                <tr key={u.username}>
+                  <td>{u.username}</td>
+                  <td>{u.pairs.toLocaleString()}</td>
+                  <td>{u.today.toLocaleString()}</td>
+                  <td>{u.last_hour.toLocaleString()}</td>
+                  <td>{u.active_hours ? (u.pairs / u.active_hours).toFixed(0) : '—'}</td>
+                  <td className="hint">{new Date(u.last_seen).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="card">
+          <h2>By day</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Day</th>
+                <th>Pairs</th>
+                <th>Active hours</th>
+                <th>People</th>
+                <th>Per active hour</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...d.perDay].reverse().map(day => (
+                <tr key={day.day}>
+                  <td>{fmtDay(day.day)}</td>
+                  <td>{day.n.toLocaleString()}</td>
+                  <td>{day.active_hours}</td>
+                  <td>{day.people}</td>
+                  <td>{day.active_hours ? (day.n / day.active_hours).toFixed(0) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="hint" style={{ marginTop: 8 }}>
+            {t.pairs.toLocaleString()} pairs in all{t.minted ? `, ${t.minted.toLocaleString()} of them bins added on the floor` : ''}
+            {t.first_pair ? `, since ${fmtDay(t.first_pair)}` : ''}. {t.checks.toLocaleString()} validation checks, {t.mismatches.toLocaleString()} mismatches.
+          </p>
+        </div>
+      </div>
+    </>
   )
 }
 

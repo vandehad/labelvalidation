@@ -178,3 +178,16 @@ select.site{font-weight:700}
   header .site,header .who{margin-left:0;width:100%}
   nav button{padding:11px 12px}
 }
+
+/* Summary tab. One hue on a neutral track, number in text beside it; thin
+   marks with rounded data-ends; the table is always there underneath. */
+.share{display:flex;align-items:center;gap:8px}
+.share-track{flex:1;height:8px;background:var(--line);border-radius:4px;overflow:hidden}
+.share-fill{height:100%;background:var(--brand);border-radius:0 4px 4px 0;min-width:0}
+.share-pct{font-size:12px;color:var(--muted);min-width:34px;text-align:right}
+.hours{display:flex;align-items:flex-end;gap:2px;height:120px;padding-top:14px;border-bottom:1px solid var(--line)}
+.hour{flex:1;height:100%;display:flex;align-items:flex-end;justify-content:center;position:relative;min-width:0}
+.hour:hover .hour-bar{filter:brightness(1.15)}
+.hour-bar{width:100%;background:var(--brand);border-radius:3px 3px 0 0;min-height:0}
+.hour-peak{position:absolute;top:-14px;font-size:11px;color:var(--muted);font-weight:700}
+.hours-axis{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px}

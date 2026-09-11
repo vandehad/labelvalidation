@@ -395,6 +395,16 @@ Repair, so the wrong pair is replaced - and the rest need the shelf re-scanned.
 Shelves paired with a `NEW-` placeholder are not suspects; they never had an
 old bin. The `.csv` download carries both halves with an `exception` column.
 
+## Summary
+
+The **Summary** tab is the conversion at a glance, measured against the WMS
+list: bins paired and to go by WMS zone, pairs per hour over the last 48 hours,
+pairs per person and per day, the average pace over hours in which anything
+was paired (a warehouse does not scan overnight), the hours left at that pace,
+and the exception and additional-bin counts from the report. It refreshes
+every 30 seconds. Every chart is one colour on a grey track with the number
+beside it, and has its table underneath.
+
 ## Auditing labels that are already hung
 
 Use the **Validate** tab when the labels exist and the question is whether they
