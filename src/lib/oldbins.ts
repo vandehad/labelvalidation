@@ -42,6 +42,15 @@ export function looksLikeWmsBin(canon: string): boolean {
   return /^\d{2}-\d{2}-\d{2,3}-\d{2}$/.test(canon)
 }
 
+/**
+ * What the export puts in the NEW BIN column for a WMS bin nothing was paired
+ * to. The cross-reference is meant to be read as the whole conversion, so a
+ * bin that never got a label has to appear in it - silently leaving it out
+ * reads as "already handled". A word rather than a blank, because a blank
+ * cell in a spreadsheet is indistinguishable from one somebody cleared.
+ */
+export const NO_NEW_BIN = 'ANOBIN'
+
 /** Ids that name a WMS concept rather than a shelf. Not loaded; nothing will ever pair to them. */
 export const NOT_A_SHELF = new Set(['NO_BIN', 'UNASSIGNED', 'BIN', 'BINID', 'USERBINID', 'OLD BIN', 'OLDBIN'])
 

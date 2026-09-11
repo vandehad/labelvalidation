@@ -2,6 +2,7 @@ import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { fail, json } from '@/lib/api'
 import { makeXlsx, type Sheet } from '@/lib/xlsx'
+import { unpairedOldBins, NO_NEW_BIN } from '@/lib/oldbins'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -11,6 +12,11 @@ export const maxDuration = 60
  * Full workbook: cross-reference, unused (to delete), unexpected, summary,
  * plus the uploaded bin map and the validation audit when either exists.
  * Sheets with nothing in them are left out rather than shipped empty.
+ *
+ * The cross-reference is every bin the WMS has, not only the ones that got a
+ * label: a WMS bin nothing was paired to is listed with `ANOBIN` in the new
+ * bin column. Left out, it would read as already handled, and the one thing
+ * this sheet has to answer is what still has no new bin.
  */
 export async function GET(req: Request) {
   try {
@@ -74,11 +80,21 @@ export async function GET(req: Request) {
       }>,
     ]
 
+    // Every WMS bin with no pair. Empty when no WMS list is loaded for the
+    // site, which leaves the sheet exactly as it was before.
+    const noBin = await unpairedOldBins(sql, siteId, null)
+
     const labelCount = (await sql`SELECT count(*)::int AS n FROM labels WHERE site_id = ${siteId}`) as Array<{ n: number }>
     const used = labelCount[0].n - unused.length
     const oneForOne = unexpected.length === 0 && pairs.length === used
 
-    const at = (t: string) => String(t).replace('T', ' ').slice(0, 19)
+    // The driver hands timestamps back as Date objects, not ISO strings, so
+    // the old String(t).slice(0, 19) cut "Fri Sep 11 2026 07:23:45 GMT…" off
+    // mid-hour and every stamp in the workbook read "Fri Sep 11 2026 07:".
+    const at = (t: string | Date) => {
+      const d = t instanceof Date ? t : new Date(String(t))
+      return Number.isNaN(d.getTime()) ? String(t) : d.toISOString().replace('T', ' ').slice(0, 19)
+    }
     const bad = checks.filter(c => c.verdict !== 'match')
     const nMatch = checks.length - bad.length
     const nMismatch = checks.filter(c => c.verdict === 'mismatch').length
@@ -94,6 +110,7 @@ export async function GET(req: Request) {
       ['scanned but not in label set', unexpected.length],
       ['one-for-one', oneForOne ? 'YES' : 'NO'],
     ]
+    if (noBin.length) summary.splice(5, 0, [`WMS bins with no new bin (${NO_NEW_BIN})`, noBin.length])
     const minted = pairs.filter(p => p.origin === 'minted')
     if (minted.length) {
       summary.push(
@@ -128,6 +145,9 @@ export async function GET(req: Request) {
             p.username ?? '',
             at(p.created_at),
           ]),
+          // Last, after everything that did get a label: these are the ones
+          // still to do, and they carry no scan to date them.
+          ...noBin.map(b => [b, NO_NEW_BIN, 'NOT PAIRED - NO LABEL HUNG', '', '', '']),
         ],
       },
       {
