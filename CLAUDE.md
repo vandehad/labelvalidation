@@ -90,7 +90,10 @@ npm run user -- <name> <password> [scanner|admin]
   from `settings.relay_key`. Do not bind the relay off `127.0.0.1` or add a
   LAN push path - it will work on one laptop and nowhere else. `queueJobs`
   checks every code against the site's stored `labels`, so the reprint rule
-  above holds from every screen; keep that check.
+  above holds from every screen; keep that check. The one LAN listener is the
+  **Windows Mobile gateway** (`wmGateway`, opt-in by port): it forwards `/wm`
+  and nothing else, because an MC92N0 cannot do TLS 1.2 and cannot reach the
+  app any other way. It must never accept ZPL or expose the setup page.
 - **`@zxing/*` is reached only through the dynamic import in
   `src/lib/camera.ts`.** It is the phone-camera fallback for browsers without
   `BarcodeDetector`. A static import anywhere would put a 450 KB decoder into

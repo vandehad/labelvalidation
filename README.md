@@ -346,6 +346,27 @@ the job waits, and prints the moment one connects. The settings gear lets a
 device pin a particular relay. The desktop's *Added on the floor* pick still
 lists every minted bin, for printing them in one go later.
 
+### The MC92N0 cannot reach the app directly
+
+Windows Mobile 6.5's Internet Explorer speaks TLS 1.0 at best; the app is
+served over TLS 1.2 and up. The handshake fails before a byte of HTML is sent,
+so the device shows nothing at all. No setting on the device changes that.
+
+The relay carries a **Windows Mobile gateway** for it: in the relay window,
+*Old handhelds*, set a port (8080, say) and Save. The relay then serves
+`http://<relay PC>:8080/wm` on the warehouse network over plain http and
+forwards it to the app over https, rewriting redirects and cookies on the way
+back. Type that address into the handheld's browser. Only `/wm` is served -
+no printing, no setup page, anything else is sent to `/wm` - which is why this
+one listener is allowed on the LAN. Windows Firewall will ask once; give the
+PC a fixed address so the handhelds keep finding it. Traffic between the
+handheld and the relay PC is unencrypted, as it has to be for that browser.
+
+What the device needs: Windows Mobile 6.5 (or CE 7) with Internet Explorer
+Mobile, Wi-Fi on the same network as the relay PC, and DataWedge or the
+built-in scanner set to send the scan as keystrokes followed by Enter. The
+page is HTML 4.01 with one field per screen and needs no JavaScript.
+
 ## The WMS bin list and progress
 
 The label set is a deliberate superset - more labels than shelves, so every

@@ -15,6 +15,12 @@
  * RAW is not optional on the Windows path: ZPL sent through a normal driver
  * prints the *text* of the ZPL, pages of it.
  *
+ * Also, opted in, a plain-HTTP gateway for the Windows Mobile handhelds: an
+ * MC92N0's browser speaks TLS 1.0 at best and the app is served over TLS 1.2+,
+ * so it cannot reach the app at all. The gateway listens on the LAN and
+ * forwards /wm to the app over https. Nothing else is proxied and no printing
+ * is accepted on it - see `wmGateway`.
+ *
  * Two ways in. A browser on this PC can POST ZPL to /print directly. And,
  * once connected to the web app with the relay key, this polls the app's
  * print queue for its site and prints whatever is there - which is how a
@@ -99,6 +105,12 @@ const PIECE = Number(arg('piece') || saved.piece || 50)
  * a piece ahead. Too low only means the printer idles briefly between pieces.
  */
 const LPS = Math.max(0.5, Number(arg('lps') || saved.lps || 3))
+
+/**
+ * The Windows Mobile gateway port. 0 is off. When on, http://<this PC>:<port>/wm
+ * on the warehouse LAN is the app's /wm for a device that cannot do TLS 1.2.
+ */
+let WM_PORT = Math.max(0, Math.floor(Number(arg('wm-port') || saved.wmPort || 0)))
 let link = {
   app: arg('app') || saved.app || 'https://labelvalidation.vercel.app',
   key: arg('key') || saved.key || '',
@@ -106,7 +118,15 @@ let link = {
   site: Number(arg('site') || saved.site || 0),
   siteName: saved.siteName || '',
 }
-const persist = () => saveConfig({ ...target, ...link, listen: LISTEN, allow: ALLOW.join(',') })
+const persist = () => saveConfig({ ...target, ...link, listen: LISTEN, allow: ALLOW.join(','), wmPort: WM_PORT })
+
+/** This PC's LAN addresses, for the address to type into a handheld. */
+function lanAddresses() {
+  const out = []
+  for (const list of Object.values(os.networkInterfaces()))
+    for (const a of list || []) if (a.family === 'IPv4' && !a.internal) out.push(a.address)
+  return out
+}
 
 const queue = { state: 'off', detail: '', lastPoll: 0, lastWork: 0, printed: 0, lastJob: null }
 
@@ -446,6 +466,22 @@ const PAGE = printers => `<!doctype html>
   <p id="qstat" style="margin-top:12px;font-weight:600"></p>
 </div>
 <div class="card">
+  <h2>Old handhelds (Windows Mobile MC92N0)</h2>
+  <p>Their browser cannot open the web app - it speaks an older https than the app accepts - so
+     this relay can serve the handheld page to them over plain http on the warehouse network.
+     Type the address below into the handheld's browser. It carries only the handheld page;
+     nothing else, and no printing.</p>
+  <div class="row">
+    <div><label>Port (0 = off)</label><input id="wmport" value="${WM_PORT}"></div>
+    <div style="flex:2"><label>Address for the handhelds</label>
+      <div class="now" id="wmaddr">${WM_PORT ? `http://${esc(lanAddresses()[0] || '<this PC>')}:${WM_PORT}/wm` : 'off'}</div></div>
+  </div>
+  <p style="margin-top:10px">Windows Firewall may ask to allow this program on the private network the first time - say yes,
+     or the handhelds cannot reach it. The address is this PC's, so give it a fixed IP.</p>
+  <button id="wmsave">Save</button>
+  <div class="msg" id="wmmsg"></div>
+</div>
+<div class="card">
   <h2>Stop</h2>
   <p>Closing this window on its own leaves the relay running in the background.
      Use this to actually stop it.</p>
@@ -520,6 +556,12 @@ const PAGE = printers => `<!doctype html>
    } catch (e) {}
  }
  refreshStatus(); setInterval(refreshStatus, 3000)
+ $('wmsave').onclick = async () => {
+   const [ok, d] = await post('/wm-gateway', { port: Number($('wmport').value) || 0 })
+   $('wmmsg').className = 'msg ' + (ok ? 'ok' : 'bad')
+   $('wmmsg').textContent = ok ? (d.address ? 'Serving the handheld page at ' + d.address : 'Gateway off.') : (d.error || 'Could not save.')
+   if (ok) $('wmaddr').textContent = d.address || 'off'
+ }
 </script>`
 
 // A label that proves the path end to end without needing the web app.
@@ -533,6 +575,78 @@ const TEST_ZPL = [
   '^PQ1',
   '^XZ',
 ].join('\n')
+
+/* ---------------- the Windows Mobile gateway ---------------- */
+
+/**
+ * Forward one /wm request to the app and hand the answer back over plain
+ * http. Three things have to be rewritten on the way back:
+ *
+ *   Location    the app redirects with absolute URLs built from the request
+ *               it saw - https://…/wm - which the device cannot follow.
+ *   Set-Cookie  the app marks its cookies Secure in production, and a browser
+ *               will not send a Secure cookie back over http.
+ *   nothing else the HTML is HTML 4.01 with relative links already.
+ *
+ * Only /wm is forwarded. Any other path is sent to /wm. The gateway accepts
+ * no ZPL and exposes no setup page - it is the handheld route and nothing
+ * more, which is why it is allowed to listen on the LAN at all.
+ */
+async function wmGateway(req, res) {
+  const url = req.url || '/'
+  if (!(url === '/wm' || url.startsWith('/wm?') || url.startsWith('/wm/'))) {
+    res.writeHead(302, { Location: '/wm' })
+    return void res.end()
+  }
+  const origin = link.app.replace(/\/$/, '')
+  const body = req.method === 'POST' ? await readBody(req, 1024 * 1024) : undefined
+  const headers = {}
+  for (const h of ['content-type', 'cookie', 'user-agent', 'accept', 'accept-language']) if (req.headers[h]) headers[h] = req.headers[h]
+  let r
+  try {
+    r = await fetch(origin + url, { method: req.method, headers, body, redirect: 'manual' })
+  } catch (e) {
+    res.writeHead(502, { 'Content-Type': 'text/html; charset=utf-8' })
+    return void res.end('<html><body style="font-family:Tahoma;font-size:20px"><b>Cannot reach the app</b><br>' + esc(e.message) + '<br><a href="/wm">try again</a></body></html>')
+  }
+  const out = { 'Cache-Control': 'no-store' }
+  const ct = r.headers.get('content-type')
+  if (ct) out['Content-Type'] = ct
+  const loc = r.headers.get('location')
+  if (loc) out['Location'] = loc.replace(origin, 'http://' + (req.headers.host || 'localhost'))
+  const cookies = typeof r.headers.getSetCookie === 'function' ? r.headers.getSetCookie() : []
+  if (cookies.length) out['Set-Cookie'] = cookies.map(c => c.replace(/;\s*Secure/gi, ''))
+  const buf = Buffer.from(await r.arrayBuffer())
+  res.writeHead(r.status, out)
+  res.end(buf)
+}
+
+let gateway = null
+function startGateway() {
+  if (gateway) {
+    gateway.close()
+    gateway = null
+  }
+  if (!WM_PORT) return
+  gateway = http.createServer((req, res) => {
+    wmGateway(req, res).catch(e => {
+      console.error('  gateway: ' + e.message)
+      try {
+        res.writeHead(500)
+        res.end()
+      } catch {}
+    })
+  })
+  gateway.on('error', e => {
+    console.error(`  gateway: cannot listen on ${WM_PORT}: ${e.message}`)
+    gateway = null
+  })
+  // The LAN, on purpose - this is the one listener that has to be reachable
+  // from the floor, and it forwards /wm and nothing else.
+  gateway.listen(WM_PORT, '0.0.0.0', () => {
+    console.log(`  handhelds   http://${lanAddresses()[0] || '<this PC>'}:${WM_PORT}/wm  (Windows Mobile gateway)`)
+  })
+}
 
 /* ---------------- http ---------------- */
 
@@ -616,6 +730,19 @@ const server = http.createServer(async (req, res) => {
       return void json(res, 200, { ok: true, target: describe() })
     }
 
+    if (req.method === 'POST' && url === '/wm-gateway') {
+      const body = JSON.parse((await readBody(req, 64 * 1024)) || '{}')
+      const port = Math.max(0, Math.floor(Number(body.port) || 0))
+      if (port && (port < 1024 || port > 65535 || port === LISTEN))
+        return void json(res, 400, { error: 'Use a port from 1024 to 65535, not the relay\'s own.' })
+      WM_PORT = port
+      persist()
+      startGateway()
+      const address = WM_PORT ? `http://${lanAddresses()[0] || '<this PC>'}:${WM_PORT}/wm` : ''
+      console.log(WM_PORT ? `  handheld gateway on ${address}` : '  handheld gateway off')
+      return void json(res, 200, { ok: true, address })
+    }
+
     // The web app link. /app/check proves the address and key and lists the
     // sites; /app saves the lot and starts polling. A link that does not work
     // is refused rather than saved - a relay that silently prints nothing is
@@ -685,6 +812,7 @@ server.listen(LISTEN, '127.0.0.1', () => {
   else console.log('  queue       not connected - open the setup page to connect to the web app')
   console.log('')
   void pollLoop()
+  startGateway()
   console.log('  Close the app window to stop, or press Ctrl-C here.')
   if (!argv.includes('--no-window')) openWindow(url)
 })

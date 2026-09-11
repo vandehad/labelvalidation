@@ -238,6 +238,17 @@ the buffer before the first check. Each check refreshes `claimed_at`, so a
 paced batch outlasting `STALE_MINUTES` is not re-queued to another relay. At
 most one piece is in the printer's buffer when Stop is pressed.
 
+**The MC92N0 reaches the app through the relay, over plain http.** Windows
+Mobile 6.5 IE tops out at TLS 1.0; Vercel requires 1.2. The device could not
+load the page at all - not a rendering problem, a handshake that fails before
+HTML. `wmGateway` in the relay is an opt-in second listener on the LAN that
+forwards `/wm` to the app over https, rewriting `Location` (the app builds
+absolute redirects from the request URL it saw) and stripping `Secure` from
+`Set-Cookie` (a browser will not return a Secure cookie over http). It
+forwards nothing else and accepts no ZPL, which is the only reason a LAN
+listener is tolerable here. It is untested on a real MC92N0 as of 10 Sep
+2026: proven against the local app with a fake client only.
+
 **Every label states its width; the relay has no say.** The ZQ630 resets
 `ezpl.print_width` at every boot, `media.width_sense` is locked off, ZBI is
 disabled, and `^JUS`, SGD setvar and the Zebra config tool all failed to make
