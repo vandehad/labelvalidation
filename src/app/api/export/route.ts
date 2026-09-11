@@ -3,6 +3,7 @@ import { requireUser } from '@/lib/auth'
 import { fail, json } from '@/lib/api'
 import { makeXlsx, type Sheet } from '@/lib/xlsx'
 import { unpairedOldBins, NO_NEW_BIN } from '@/lib/oldbins'
+import { barcodeData } from '@/lib/zpl'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -17,6 +18,13 @@ export const maxDuration = 60
  * label: a WMS bin nothing was paired to is listed with `ANOBIN` in the new
  * bin column. Left out, it would read as already handled, and the one thing
  * this sheet has to answer is what still has no new bin.
+ *
+ * Each new bin is given twice: the bare code, and the form the barcode on the
+ * label actually carries - the zone letter padded to six characters, then the
+ * code, `A     A0101A01`. A scanner returns those fourteen characters, so a
+ * system matching against scans needs the padded form, and deriving it from
+ * the code by hand is how a whole zone ends up with the wrong first letter.
+ * The cells are written with xml:space="preserve", so the spaces survive.
  */
 export async function GET(req: Request) {
   try {
@@ -134,12 +142,13 @@ export async function GET(req: Request) {
       { name: 'SUMMARY', widths: [34, 16], rows: summary },
       {
         name: 'CROSS REFERENCE',
-        widths: [16, 14, 24, 12, 14, 20],
+        widths: [16, 14, 20, 24, 12, 14, 20],
         rows: [
-          ['OLD BIN', 'NEW BIN', 'ORIGIN', 'LOCATION', 'SCANNED BY', 'SCANNED AT'],
+          ['OLD BIN', 'NEW BIN', 'NEW BIN AS SCANNED', 'ORIGIN', 'LOCATION', 'SCANNED BY', 'SCANNED AT'],
           ...pairs.map(p => [
             p.old_bin,
             p.new_bin,
+            barcodeData(p.new_bin),
             p.origin === 'minted' ? 'ADDED - CREATE THIS BIN' : 'renamed',
             p.location ?? '',
             p.username ?? '',
@@ -147,7 +156,9 @@ export async function GET(req: Request) {
           ]),
           // Last, after everything that did get a label: these are the ones
           // still to do, and they carry no scan to date them.
-          ...noBin.map(b => [b, NO_NEW_BIN, 'NOT PAIRED - NO LABEL HUNG', '', '', '']),
+          // NO_NEW_BIN in the padded column too, not a blank: a cell that is
+          // empty is indistinguishable from one somebody cleared.
+          ...noBin.map(b => [b, NO_NEW_BIN, NO_NEW_BIN, 'NOT PAIRED - NO LABEL HUNG', '', '', '']),
         ],
       },
       {
@@ -168,12 +179,13 @@ export async function GET(req: Request) {
       // should not arrive mixed in with them.
       sheets.push({
         name: 'NEW BINS',
-        widths: [16, 14, 8, 8, 9, 8, 14, 20],
+        widths: [16, 14, 20, 8, 8, 9, 8, 14, 20],
         rows: [
-          ['PLACEHOLDER', 'NEW BIN', 'ZONE', 'AISLE', 'COLUMN', 'SHELF', 'ADDED BY', 'ADDED AT'],
+          ['PLACEHOLDER', 'NEW BIN', 'NEW BIN AS SCANNED', 'ZONE', 'AISLE', 'COLUMN', 'SHELF', 'ADDED BY', 'ADDED AT'],
           ...minted.map(m => [
             m.old_bin,
             m.new_bin,
+            barcodeData(m.new_bin),
             m.new_bin[0],
             Number(m.new_bin.slice(1, 3)),
             Number(m.new_bin.slice(3, 5)),
