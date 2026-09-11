@@ -288,7 +288,7 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
   const [lastPair, setLastPair] = useState<{ id: number; old_bin: string; new_bin: string } | null>(null)
   // Repair: armed by hand, stays on until turned off by hand - see src/lib/repair.ts.
   const [repair, setRepair] = useState(false)
-  const [totals, setTotals] = useState<{ pairs: number; labels: number }>({ pairs: 0, labels: 0 })
+  const [totals, setTotals] = useState<{ pairs: number; labels: number; wms: number; wms_paired: number }>({ pairs: 0, labels: 0, wms: 0, wms_paired: 0 })
   const [byUser, setByUser] = useState<Array<{ username: string; n: number }>>([])
   const [sound, setSound] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -505,6 +505,12 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
       <Unpair siteId={siteId} onDone={refresh} />
 
       <div className="stats">
+        {totals.wms ? (
+          <>
+            <Stat n={`${totals.wms_paired.toLocaleString()} / ${totals.wms.toLocaleString()}`} l="WMS bins paired" />
+            <Stat n={(totals.wms - totals.wms_paired).toLocaleString()} l="WMS bins to go" />
+          </>
+        ) : null}
         <Stat n={totals.pairs.toLocaleString()} l="pairs captured" />
         <Stat n={totals.labels ? totals.labels.toLocaleString() : '—'} l="labels generated" />
         <Stat n={totals.labels ? (totals.labels - totals.pairs).toLocaleString() : '—'} l="labels unused" />
@@ -1510,6 +1516,8 @@ function Reconcile({ siteId }: { siteId: number }) {
         {err && <div className="msg show bad" style={{ marginTop: 12 }}>{err}</div>}
       </div>
 
+      <WmsReport siteId={siteId} />
+
       {d && (
         <>
           <div className="stats">
@@ -2305,6 +2313,7 @@ function Admin({ user }: { user: User }) {
         </p>
       </div>
 
+      <WmsUpload />
       <RelayCard />
       <Wipe />
     </>
@@ -2312,6 +2321,270 @@ function Admin({ user }: { user: User }) {
 }
 
 /* ------------------------------------------------------------------ */
+
+/**
+ * The exception report: WMS bins nothing has been paired to yet. The label
+ * set is a superset, so reconcile's "unused labels" is expected to be large
+ * and says nothing about completeness. This list has to reach zero.
+ */
+function WmsReport({ siteId }: { siteId: number }) {
+  const [d, setD] = useState<{
+    total: number
+    paired: number
+    unpaired: string[]
+    truncated: boolean
+    suspects: Array<{ old_bin: string; new_bin: string; username: string | null; kind: 'upc' | 'similar' | 'unknown' | 'extra'; suggestions: string[] }>
+  } | null>(null)
+  const [err, setErr] = useState('')
+  const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
+
+  // Put a suspect right from here: the WMS bin it was meant to be, paired to
+  // the same label. Goes through repair, so the wrong pair is replaced, not
+  // duplicated, and whatever the suggested bin was paired to is reported.
+  const fix = async (s: { old_bin: string; new_bin: string }, suggestion: string) => {
+    if (!confirm(`Re-pair ${s.new_bin}: old bin ${s.old_bin} → ${suggestion}?`)) return
+    try {
+      const r = await api('/api/pairs/repair', { method: 'POST', body: JSON.stringify({ siteId, oldBin: suggestion, newBin: s.new_bin, location: 'repaired from report' }) })
+      setMsg({ kind: 'ok', text: `${suggestion} → ${s.new_bin}. ${describeReplaced(r.replaced)}` })
+      await load()
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    }
+  }
+  const load = useCallback(async () => {
+    try {
+      setD(await api(`/api/oldbins?site=${siteId}`))
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
+  }, [siteId])
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  if (err) return <div className="msg show bad">{err}</div>
+  if (!d) return null
+  if (!d.total)
+    return (
+      <div className="card">
+        <h2>WMS bins not yet paired</h2>
+        <p className="hint">
+          No WMS bin list is loaded for this site. Load one on the Admin tab and progress on every screen is
+          measured against it, and this becomes the list of what is still to do.
+        </p>
+      </div>
+    )
+  return (
+    <div className="card">
+      <h2>WMS bins not yet paired</h2>
+      <div className="stats">
+        <Stat n={d.total.toLocaleString()} l="WMS bins" />
+        <Stat n={d.paired.toLocaleString()} l="paired" />
+        <Stat n={(d.total - d.paired).toLocaleString()} l="not yet paired" />
+        <Stat n={`${d.total ? Math.floor((d.paired / d.total) * 100) : 0}%`} l="done" />
+      </div>
+      <div className="btns" style={{ marginTop: 10 }}>
+        <a className="act" href={`/api/oldbins?site=${siteId}&format=csv`} style={{ textDecoration: 'none' }}>
+          Download exception report (.csv)
+        </a>
+        <button className="act ghost" onClick={load}>
+          Refresh
+        </button>
+      </div>
+      {msg && <div className={`msg show ${msg.kind}`} style={{ marginTop: 10 }}>{msg.text}</div>}
+      <div className="split" style={{ marginTop: 10 }}>
+        <div>
+          <h2 style={{ fontSize: 14 }}>Not yet paired ({(d.total - d.paired).toLocaleString()})</h2>
+          {d.unpaired.length > 0 ? (
+            <div className="scroll" style={{ maxHeight: 320 }}>
+              <table>
+                <tbody>
+                  {d.unpaired.map(b => (
+                    <tr key={b}>
+                      <td>
+                        <code>{b}</code>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {d.truncated && <p className="hint">First 500 shown; the download has all of them.</p>}
+            </div>
+          ) : (
+            <p className="hint">Every WMS bin is paired.</p>
+          )}
+        </div>
+        <div>
+          <h2 style={{ fontSize: 14, color: d.suspects.some(s => s.kind !== 'extra') ? 'var(--bad)' : undefined }}>
+            Suspect old bins in pairs ({d.suspects.filter(s => s.kind !== 'extra').length.toLocaleString()}) — repair these
+          </h2>
+          <p className="hint">
+            Pairs whose old bin is not a WMS bin: keyed without dashes or padding, a UPC scanned instead of
+            the shelf, or something from elsewhere. A single suggestion can be applied here; the rest need the
+            shelf re-scanned with Repair.
+          </p>
+          {d.suspects.some(s => s.kind !== 'extra') && (
+            <div className="scroll" style={{ maxHeight: 320 }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Old bin as scanned</th>
+                    <th>Label</th>
+                    <th>Looks like</th>
+                    <th>Probably meant</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.suspects.filter(s => s.kind !== 'extra').map(s => (
+                    <tr key={`${s.old_bin}|${s.new_bin}`} className={s.kind === 'upc' ? 'dupe' : ''}>
+                      <td>
+                        <code>{s.old_bin}</code>
+                      </td>
+                      <td>
+                        <code>{s.new_bin}</code>
+                        {s.username ? <span className="hint"> {s.username}</span> : null}
+                      </td>
+                      <td>{s.kind === 'upc' ? 'a UPC, not a bin' : s.kind === 'similar' ? 'a WMS bin, mis-keyed' : 'not in the WMS list'}</td>
+                      <td>{s.suggestions.length ? s.suggestions.map(x => <code key={x}>{x} </code>) : '—'}</td>
+                      <td>
+                        {s.suggestions.length === 1 && (
+                          <button className="act ghost" onClick={() => fix(s, s.suggestions[0])}>
+                            Use suggestion
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {d.suspects.some(s => s.kind === 'extra') && (
+            <>
+              <h2 style={{ fontSize: 14, marginTop: 14 }}>
+                Additional bins paired, not in the WMS list ({d.suspects.filter(s => s.kind === 'extra').length.toLocaleString()})
+              </h2>
+              <p className="hint">Real shelves the list did not have. Not exceptions, and not counted toward the WMS total.</p>
+              <div className="scroll" style={{ maxHeight: 200 }}>
+                <table>
+                  <tbody>
+                    {d.suspects.filter(s => s.kind === 'extra').map(s => (
+                      <tr key={`${s.old_bin}|${s.new_bin}`}>
+                        <td><code>{s.old_bin}</code></td>
+                        <td><code>{s.new_bin}</code>{s.username ? <span className="hint"> {s.username}</span> : null}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Loading the WMS old-bin list. One column of bin ids, pasted or from a
+ * file; headers and WMS placeholders like NO_BIN are dropped. Adds to the
+ * list unless told to replace it. Touches neither pairs nor the label set.
+ */
+function WmsUpload() {
+  const [sites, setSites] = useState<Site[]>([])
+  const [siteId, setSiteId] = useState<number | null>(null)
+  const [text, setText] = useState('')
+  const [replace, setReplace] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const d = await api('/api/sites')
+        setSites(d.sites)
+        setSiteId(cur => cur ?? d.sites[0]?.id ?? null)
+      } catch {
+        /* the message on submit will say */
+      }
+    })()
+  }, [])
+
+  const fromFile = async (f: File) => {
+    try {
+      const rows = await readTable(f)
+      setText(rows.map(r => String(r[0] ?? '')).join('\n'))
+      // column B is the bin id in a WMS export that carries a row id first
+      const firstCol = rows.map(r => String(r[0] ?? '')).filter(v => /-/.test(v)).length
+      const secondCol = rows.map(r => String(r[1] ?? '')).filter(v => /-/.test(v)).length
+      if (secondCol > firstCol) setText(rows.map(r => String(r[1] ?? '')).join('\n'))
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  const load = async () => {
+    if (!siteId) return
+    setBusy(true)
+    setMsg(null)
+    try {
+      const bins = text.split(/\r?\n/)
+      const r = await api('/api/oldbins', { method: 'POST', body: JSON.stringify({ siteId, bins, replace }) })
+      setMsg({
+        kind: 'ok',
+        text: `${r.added.toLocaleString()} bin(s) ${r.replaced ? 'loaded, replacing the list' : 'added'}; the list holds ${r.total.toLocaleString()}, ${r.paired.toLocaleString()} already paired.${r.dropped.length ? ` Dropped ${r.dropped.join(', ')}.` : ''}`,
+      })
+      setText('')
+      setReplace(false)
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const count = text.split(/\r?\n/).filter(s => s.trim()).length
+  return (
+    <div className="card">
+      <h2>WMS bin list</h2>
+      <p className="hint">
+        The bins the WMS has for a site - the list that has to end up paired. Progress on every screen is
+        counted against it, and Reconcile lists what is still to do. One column of bin ids; a WMS export
+        with a row id in column A and the bin in column B is read correctly. Loading changes neither the
+        pairs nor the label set.
+      </p>
+      {msg && <div className={`msg show ${msg.kind}`}>{msg.text}</div>}
+      <div className="row">
+        <div>
+          <label>Site</label>
+          <select value={siteId ?? ''} onChange={e => setSiteId(Number(e.target.value))}>
+            {sites.map(s => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label>File (.csv or .xlsx)</label>
+          <input type="file" accept=".csv,.xlsx,.txt" onChange={e => e.target.files?.[0] && fromFile(e.target.files[0])} />
+        </div>
+      </div>
+      <label style={{ marginTop: 10 }}>Or paste the ids, one per line</label>
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={6} placeholder={'01-09-03-05\n01-09-03-15\n…'} />
+      <div className="btns" style={{ marginTop: 10, alignItems: 'center' }}>
+        <button className="act" onClick={load} disabled={busy || !count || !siteId}>
+          {busy ? 'Loading…' : `${replace ? 'Replace the list with' : 'Add'} ${count.toLocaleString()} bin(s)`}
+        </button>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, textTransform: 'none', letterSpacing: 0 }}>
+          <input type="checkbox" checked={replace} onChange={e => setReplace(e.target.checked)} />
+          Replace the existing list instead of adding
+        </label>
+      </div>
+    </div>
+  )
+}
 
 /**
  * The relays. print-server.exe on a PC with a printer signs in with this key,

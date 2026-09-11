@@ -162,6 +162,35 @@ const steps = [
     )`,
   ],
   ['print_jobs by site', `CREATE INDEX IF NOT EXISTS print_jobs_site_idx ON print_jobs (site_id, status, id)`],
+
+  // ---- the WMS old-bin list -------------------------------------------
+  // What has to end up paired. Separate from pairs (the work) and from the
+  // label set (a deliberate superset), so progress is measured against the
+  // bins the WMS actually has. `canon` is the comparable form - see
+  // src/lib/oldbins.ts - and canon_old() is the same rule in SQL so the
+  // paired count is a hash join.
+  ['pad2()', `CREATE OR REPLACE FUNCTION pad2(p text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+      SELECT CASE WHEN length(p) < 2 THEN lpad(p, 2, '0') ELSE p END $$`],
+  ['canon_old()', `CREATE OR REPLACE FUNCTION canon_old(t text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+      SELECT CASE
+        WHEN btrim(t) ~ '^[0-9]{8}$'
+          THEN substr(btrim(t), 1, 2) || '-' || substr(btrim(t), 3, 2) || '-' || substr(btrim(t), 5, 2) || '-' || substr(btrim(t), 7, 2)
+        WHEN btrim(t) ~ '^[0-9]{4}$'
+          THEN '0' || substr(btrim(t), 1, 1) || '-0' || substr(btrim(t), 2, 1) || '-0' || substr(btrim(t), 3, 1) || '-0' || substr(btrim(t), 4, 1)
+        WHEN upper(btrim(t)) ~ '^[0-9]+-[0-9]+-[0-9]+-[0-9]+$'
+          THEN pad2(split_part(btrim(t), '-', 1)) || '-' || pad2(split_part(btrim(t), '-', 2)) || '-' ||
+               pad2(split_part(btrim(t), '-', 3)) || '-' || pad2(split_part(btrim(t), '-', 4))
+        ELSE upper(btrim(t)) END $$`],
+  [
+    'old_bins',
+    `CREATE TABLE IF NOT EXISTS old_bins (
+      site_id  integer NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+      old_bin  text NOT NULL,
+      canon    text NOT NULL,
+      PRIMARY KEY (site_id, old_bin)
+    )`,
+  ],
+  ['old_bins by canon', `CREATE INDEX IF NOT EXISTS old_bins_canon_idx ON old_bins (site_id, canon)`],
 ]
 
 if (printOnly) {

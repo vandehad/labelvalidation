@@ -21,9 +21,15 @@ export async function GET(req: Request) {
           FROM pairs p LEFT JOIN users u ON u.id = p.user_id
           WHERE p.site_id = ${siteId}
           ORDER BY p.id DESC LIMIT ${limit}`,
-      sql`SELECT
+      // WMS progress: how many of the bins the WMS knows about are paired.
+      // The label set is a superset, so "labels used" says little; this is
+      // the number that matters. Zero wms means no list is loaded.
+      sql`WITH pc AS (SELECT DISTINCT canon_old(old_bin) AS c FROM pairs WHERE site_id = ${siteId})
+          SELECT
             (SELECT count(*)::int FROM pairs  WHERE site_id = ${siteId}) AS pairs,
-            (SELECT count(*)::int FROM labels WHERE site_id = ${siteId}) AS labels`,
+            (SELECT count(*)::int FROM labels WHERE site_id = ${siteId}) AS labels,
+            (SELECT count(*)::int FROM old_bins WHERE site_id = ${siteId}) AS wms,
+            (SELECT count(*)::int FROM old_bins o JOIN pc ON pc.c = o.canon WHERE o.site_id = ${siteId}) AS wms_paired`,
       sql`SELECT COALESCE(u.username,'?') AS username, count(*)::int AS n
           FROM pairs p LEFT JOIN users u ON u.id = p.user_id
           WHERE p.site_id = ${siteId} GROUP BY 1 ORDER BY n DESC`,

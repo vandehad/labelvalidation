@@ -102,7 +102,14 @@ npm run user -- <name> <password> [scanner|admin]
 
 - Bin codes are uppercased at every boundary.
 - Old bins come in two formats (`A-1-1-1` and `A010101`) plus padding variants.
-  Use `parseOld`; do not write another regex.
+  Use `parseOld`; do not write another regex. The WMS at site 7 uses a third,
+  numeric-zone form (`01-09-03-05`); `canonOld` in `src/lib/oldbins.ts` and
+  `canon_old()` in Postgres are the one comparable form for it - keep them
+  in step, and compare the WMS list to `pairs.old_bin` through them only.
+- **Progress is measured against the WMS old-bin list, not the label set.**
+  The label set is a deliberate superset, so "labels left" never reaches zero.
+  `old_bins` is loaded per site on the Admin tab, changes neither pairs nor
+  labels, and its unpaired remainder is the exception report on Reconcile.
 - An uploaded bin map is reference data, never truth. It lives in `bin_map`,
   separate from `pairs`, because a scanned pair is something two people watched
   happen and an uploaded row is a vendor's claim. Site 18's claim was wrong 364

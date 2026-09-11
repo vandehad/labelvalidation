@@ -367,9 +367,20 @@ async function tallyFor(st: Step): Promise<string> {
     const sql = db()
     if (st.mode === 'pair') {
       const p = (await sql`
+        WITH pc AS (SELECT DISTINCT canon_old(old_bin) AS c FROM pairs WHERE site_id = ${st.site})
         SELECT (SELECT count(*)::int FROM pairs WHERE site_id = ${st.site}) AS pairs,
-               (SELECT count(*)::int FROM labels WHERE site_id = ${st.site}) AS labels`) as Array<{ pairs: number; labels: number }>
-      return `${p[0].pairs} paired, ${Math.max(0, p[0].labels - p[0].pairs)} to go`
+               (SELECT count(*)::int FROM labels WHERE site_id = ${st.site}) AS labels,
+               (SELECT count(*)::int FROM old_bins WHERE site_id = ${st.site}) AS wms,
+               (SELECT count(*)::int FROM old_bins o JOIN pc ON pc.c = o.canon WHERE o.site_id = ${st.site}) AS wms_paired`) as Array<{
+        pairs: number
+        labels: number
+        wms: number
+        wms_paired: number
+      }>
+      const t = p[0]
+      // Against the WMS list when one is loaded - that is the number that has to reach zero.
+      if (t.wms) return `${t.wms_paired} of ${t.wms} WMS bins paired, ${t.wms - t.wms_paired} to go`
+      return `${t.pairs} paired, ${Math.max(0, t.labels - t.pairs)} to go`
     }
     const r = (await sql`
       SELECT count(*)::int AS n,

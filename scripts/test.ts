@@ -34,6 +34,7 @@ import {
 } from '../src/lib/zpl.ts'
 import { debounceCode } from '../src/lib/camera.ts'
 import { parseBearer, relayName, chunkCodes, newRelayKey, sameKey } from '../src/lib/printq.ts'
+import { canonOld, cleanOldBins, suggestOldBin, looksLikeWmsBin } from '../src/lib/oldbins.ts'
 import { writeFileSync, unlinkSync } from 'node:fs'
 
 let pass = 0
@@ -569,6 +570,41 @@ ok('the separator is configurable', displayCode('A0000A01', ' - ') === 'A00 - 00
   ok('and sliced to the chunk size', chunks.length === 2 && chunks[0].length === 2 && chunks[1].length === 1)
   ok('nothing in, nothing out', chunkCodes([]).length === 0)
   ok('the default chunk is one job per 500', chunkCodes(Array.from({ length: 1001 }, (_, i) => `A${String(i).padStart(4, '0')}A01`)).length === 3)
+}
+
+/* ---------- the WMS old-bin list: one comparable form ---------- */
+ok('WMS id is its own canon', canonOld('01-09-03-05') === '01-09-03-05')
+ok('a scan without leading zeros pads to it', canonOld('1-9-3-5') === '01-09-03-05')
+ok('mixed padding pads to it', canonOld(' 1-09-3-15 ') === '01-09-03-15')
+ok('three-digit parts are kept, not truncated', canonOld('6-8-103-15') === '06-08-103-15')
+ok('a lettered old bin is only uppercased', canonOld('a-1-1-1') === 'A-1-1-1')
+ok('an eight-character old bin is untouched', canonOld('A010101') === 'A010101')
+ok('a WMS typo with a double dash is left as it is, so the report shows it', canonOld('07--06-06-03') === '07--06-06-03')
+ok('eight bare digits are two a part', canonOld('01090305') === '01-09-03-05')
+ok('four bare digits are one a part', canonOld('1935') === '01-09-03-05')
+ok('seven bare digits are ambiguous and left alone', canonOld('1090305') === '1090305')
+ok('nine bare digits are left alone - a UPC', canonOld('706913835') === '706913835')
+{
+  const { bins, dropped } = cleanOldBins(['userbinid', '01-09-03-05', ' 01-09-03-05', '', 'NO_BIN', 'UNASSIGNED', '01-09-05-01', 'Z999999999'])
+  ok('cleaning drops blanks, headers and WMS placeholders', dropped.join(',') === 'USERBINID,NO_BIN,UNASSIGNED')
+  ok('and deduplicates, keeping order', bins.join(',') === '01-09-03-05,01-09-05-01,Z999999999')
+  ok('quotes and inner-quote spaces are packaging, not id', cleanOldBins(['"01-09-03-05"', '" 04-32-06-02"', '04-32-06-02']).bins.join(',') === '01-09-03-05,04-32-06-02')
+}
+
+{
+  const wms = new Set(['01-09-03-05', '01-09-03-15', '06-08-103-15', '02-11-01-01'])
+  const s = (raw: string) => suggestOldBin(raw, wms)
+  ok('eight bare digits are already the bin, so a listed one never reaches the suspects', canonOld('01090305') === '01-09-03-05' && wms.has(canonOld('01090305')))
+  ok('seven digits that split one way into the list are similar with that suggestion', s('1090305').kind === 'similar' && s('1090305').suggestions.join() === '01-09-03-05')
+  ok('a well-formed bin the list lacks is extra, not an exception', s('03-12-04-02').kind === 'extra' && s('3-12-4-2').kind === 'extra' && s('03120402').kind === 'extra')
+  ok('an unpadded dashed id that is a WMS bin is not a suspect at all', canonOld('1-9-3-5') === '01-09-03-05')
+  ok('an ambiguous run lists every WMS bin it could be', s('010903155').kind === 'upc' || s('1090315').suggestions.includes('01-09-03-15'))
+  ok('nine or more digits is a UPC, not a bin', s('7069138359').kind === 'upc' && s('7069138359').suggestions.length === 0)
+  ok('digits that split into nothing in the list are unknown', s('9999999').kind === 'unknown')
+  ok('eight digits are well-formed even when not listed, so they are extra, not unknown', s('99999999').kind === 'extra')
+  ok('letters are unknown', s('Q-99-9-9').kind === 'unknown')
+  ok('looksLikeWmsBin knows the shape', looksLikeWmsBin('01-09-03-05') && looksLikeWmsBin('06-08-103-15') && !looksLikeWmsBin('A-1-1-1') && !looksLikeWmsBin('1090305'))
+  ok('a suggestion is only ever a real WMS bin', s('211011').suggestions.every(x => wms.has(x)))
 }
 
 /* ---------- xlsx ---------- */

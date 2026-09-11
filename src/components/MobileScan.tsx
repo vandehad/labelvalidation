@@ -329,7 +329,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const [result, setResult] = useState<{ verdict: Verdict | 'error'; text: string; sub?: string } | null>(null)
   const [counts, setCounts] = useState({
     match: 0, mismatch: 0, unmapped: 0, checked: 0, reference: 0, // validate
-    paired: 0, mine: 0, labels: 0, // pair
+    paired: 0, mine: 0, labels: 0, wms: 0, wmsPaired: 0, // pair
   })
   // Which panel sits under the verdict: the scan fields, the add-a-bin
   // picker, or the reprint field.
@@ -410,7 +410,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       if (mode === 'pair') {
         const d = await api(`/api/pairs?site=${siteId}&limit=1`)
         const mine = (d.byUser as Array<{ username: string; n: number }>).find(u => u.username === user.name)?.n ?? 0
-        setCounts(c => ({ ...c, paired: d.totals.pairs, labels: d.totals.labels, mine }))
+        setCounts(c => ({ ...c, paired: d.totals.pairs, labels: d.totals.labels, mine, wms: d.totals.wms ?? 0, wmsPaired: d.totals.wms_paired ?? 0 }))
       } else {
         const d = await api(`/api/checks?site=${siteId}&source=${source}&limit=1`)
         setCounts(c => ({ ...c, ...d.counts }))
@@ -1144,21 +1144,24 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       )}
 
       {mode === 'pair' ? (
+        // Progress against the WMS list when one is loaded: the label set is
+        // a superset, so "labels left" would never reach zero and means
+        // nothing to the person in the aisle. WMS bins paired does.
         <div className="m-tally">
           <div>
-            <b>{counts.paired.toLocaleString()}</b>
-            <span>paired</span>
+            <b>{(counts.wms ? counts.wmsPaired : counts.paired).toLocaleString()}</b>
+            <span>{counts.wms ? 'WMS paired' : 'paired'}</span>
           </div>
           <div>
             <b>{counts.mine.toLocaleString()}</b>
             <span>by me</span>
           </div>
           <div>
-            <b>{counts.labels.toLocaleString()}</b>
-            <span>labels</span>
+            <b>{(counts.wms || counts.labels).toLocaleString()}</b>
+            <span>{counts.wms ? 'WMS bins' : 'labels'}</span>
           </div>
-          <div>
-            <b>{Math.max(0, counts.labels - counts.paired).toLocaleString()}</b>
+          <div className={counts.wms && counts.wms - counts.wmsPaired > 0 ? 'warn' : ''}>
+            <b>{Math.max(0, counts.wms ? counts.wms - counts.wmsPaired : counts.labels - counts.paired).toLocaleString()}</b>
             <span>to go</span>
           </div>
         </div>

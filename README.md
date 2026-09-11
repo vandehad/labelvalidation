@@ -346,6 +346,34 @@ the job waits, and prints the moment one connects. The settings gear lets a
 device pin a particular relay. The desktop's *Added on the floor* pick still
 lists every minted bin, for printing them in one go later.
 
+## The WMS bin list and progress
+
+The label set is a deliberate superset - more labels than shelves, so every
+shelf has one waiting - which makes "labels used" a poor measure of progress.
+What has to reach zero is the number of bins the **WMS** knows about that are
+not yet paired. Load that list on the Admin tab (*WMS bin list*: a file or a
+pasted column; a WMS export with a row id in column A and the bin in column B
+is read correctly; `NO_BIN`, `UNASSIGNED` and headers are dropped). Loading
+changes neither pairs nor the label set, and adds unless told to replace.
+
+Once loaded, every screen's tally counts against it - *WMS paired / WMS bins /
+to go* on the handheld, `x of y WMS bins paired` on the MC92N0, *WMS bins
+paired* on the desktop - and Reconcile shows **WMS bins not yet paired**, the
+exception report, with a `.csv` download of the full list.
+
+Comparison is on a canonical form: the WMS writes `01-09-03-05`, a scan may
+say `1-9-3-5`, and both count as the same bin.
+
+The report has a second half: **suspect old bins in pairs** - pairs whose old
+bin is not a WMS bin. `01090305` or `1935` keyed for `01-09-03-05` is flagged
+as *mis-keyed* with the WMS bin it probably meant (every split into four parts
+is tried against the list, and only real WMS bins are suggested); nine or more
+digits is flagged as *a UPC, not a bin*; anything else as *not in the WMS
+list*. A single suggestion can be applied with one click - it goes through
+Repair, so the wrong pair is replaced - and the rest need the shelf re-scanned.
+Shelves paired with a `NEW-` placeholder are not suspects; they never had an
+old bin. The `.csv` download carries both halves with an `exception` column.
+
 ## Auditing labels that are already hung
 
 Use the **Validate** tab when the labels exist and the question is whether they
