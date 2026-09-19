@@ -97,7 +97,7 @@ export async function loadOldBins(sql: Sql, siteId: number, bins: string[], repl
 /** How many WMS bins are paired. `total` 0 means no list is loaded for the site. */
 export async function progress(sql: Sql, siteId: number): Promise<Progress> {
   const rows = (await sql`
-    WITH pc AS (SELECT DISTINCT canon_old(old_bin) AS c FROM pairs WHERE site_id = ${siteId})
+    WITH pc AS (SELECT DISTINCT old_canon AS c FROM pairs WHERE site_id = ${siteId})
     SELECT (SELECT count(*)::int FROM old_bins WHERE site_id = ${siteId}) AS total,
            (SELECT count(*)::int FROM old_bins o JOIN pc ON pc.c = o.canon WHERE o.site_id = ${siteId}) AS paired`) as Array<{
     total: number
@@ -111,11 +111,11 @@ export async function progress(sql: Sql, siteId: number): Promise<Progress> {
 export async function unpairedOldBins(sql: Sql, siteId: number, limit: number | null): Promise<string[]> {
   const rows = (await (limit === null
     ? sql`
-      WITH pc AS (SELECT DISTINCT canon_old(old_bin) AS c FROM pairs WHERE site_id = ${siteId})
+      WITH pc AS (SELECT DISTINCT old_canon AS c FROM pairs WHERE site_id = ${siteId})
       SELECT o.old_bin FROM old_bins o LEFT JOIN pc ON pc.c = o.canon
       WHERE o.site_id = ${siteId} AND pc.c IS NULL ORDER BY o.old_bin`
     : sql`
-      WITH pc AS (SELECT DISTINCT canon_old(old_bin) AS c FROM pairs WHERE site_id = ${siteId})
+      WITH pc AS (SELECT DISTINCT old_canon AS c FROM pairs WHERE site_id = ${siteId})
       SELECT o.old_bin FROM old_bins o LEFT JOIN pc ON pc.c = o.canon
       WHERE o.site_id = ${siteId} AND pc.c IS NULL ORDER BY o.old_bin LIMIT ${limit}`)) as Array<{ old_bin: string }>
   return rows.map(r => r.old_bin)
@@ -179,11 +179,46 @@ export async function suspectPairs(sql: Sql, siteId: number): Promise<Suspect[]>
     SELECT p.old_bin, p.new_bin, u.username
     FROM pairs p LEFT JOIN users u ON u.id = p.user_id
     WHERE p.site_id = ${siteId} AND p.origin <> 'minted'
-      AND NOT EXISTS (SELECT 1 FROM old_bins o WHERE o.site_id = p.site_id AND o.canon = canon_old(p.old_bin))
+      AND NOT EXISTS (SELECT 1 FROM old_bins o WHERE o.site_id = p.site_id AND o.canon = p.old_canon)
     ORDER BY p.old_bin`) as Array<{ old_bin: string; new_bin: string; username: string | null }>
   if (!rows.length) return []
   const canons = new Set(
     ((await sql`SELECT canon FROM old_bins WHERE site_id = ${siteId}`) as Array<{ canon: string }>).map(r => r.canon),
   )
   return rows.map(r => ({ ...r, ...suggestOldBin(r.old_bin, canons) }))
+}
+
+/* ---------- pairs whose two labels name different aisles ---------- */
+
+export type AisleMismatch = {
+  old_bin: string
+  new_bin: string
+  username: string | null
+  old_aisle: number
+  new_aisle: number
+  /** True when the screen held this pair and the associate kept it anyway. */
+  kept: boolean
+  created_at: string
+}
+
+/**
+ * Columns run backwards in whole zones and zone letters are a per-site
+ * mapping, but the aisle carries over. A pair that crosses aisles is either a
+ * slip at an aisle boundary or a stack of labels hung down the wrong aisle;
+ * both were found at site 7, days late, by hand. The screen now holds these
+ * at scan time (src/lib/pairguard.ts) - this is the list of the ones already
+ * in, and of the ones kept after the warning.
+ */
+export async function aisleMismatches(sql: Sql, siteId: number): Promise<AisleMismatch[]> {
+  return (await sql`
+    SELECT p.old_bin, p.new_bin, u.username, p.created_at,
+           split_part(p.old_canon, '-', 2)::int AS old_aisle,
+           substr(p.new_bin, 2, 2)::int AS new_aisle,
+           (p.warned IS NOT NULL) AS kept
+    FROM pairs p LEFT JOIN users u ON u.id = p.user_id
+    WHERE p.site_id = ${siteId} AND p.origin <> 'minted'
+      AND p.old_canon ~ '^[0-9]+-[0-9]+-[0-9]+-[0-9]+$'
+      AND p.new_bin ~ '^[A-Z][0-9]{4}[A-Z][0-9]{2}$'
+      AND split_part(p.old_canon, '-', 2)::int <> substr(p.new_bin, 2, 2)::int
+    ORDER BY u.username NULLS LAST, p.created_at`) as AisleMismatch[]
 }

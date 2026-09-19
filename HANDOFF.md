@@ -249,6 +249,24 @@ forwards nothing else and accepts no ZPL, which is the only reason a LAN
 listener is tolerable here. It is untested on a real MC92N0 as of 10 Sep
 2026: proven against the local app with a fake client only.
 
+**Guards at scan time came out of site 7's data, not out of caution.** In
+three days: 40 UPCs scanned as old bins by one person in one morning (each
+burned a label and left the real bin unpaired), 102 pairs where one person
+hung H01 labels down six aisles in half an hour, and a scatter of single
+slips at aisle changes. All found later, by query. So a UPC is now refused,
+and a crossed aisle or an unknown old bin is *held* - amber, old label kept,
+scan the same new label again to keep it. Held rather than refused because 26
+genuine shelves at site 7 were not in the WMS list. Conflicts are checked
+before a hold is offered, so nobody confirms their way into a refusal.
+
+The lag complaint was real but was not mostly the server. The tally took
+~160 ms and is ~100 ms now (`pairs.old_canon`, trigger-maintained, replaces
+`canon_old()` over every pair). The defect was the handheld awaiting the save
+*and then* the tally before reopening, with the fields live the whole time:
+a scan pulled in that window typed into a field the `finally` block was about
+to clear. The fields are now read-only while saving, a scan that arrives is
+refused out loud, and the tally runs in the background.
+
 **Every label states its width; the relay has no say.** The ZQ630 resets
 `ezpl.print_width` at every boot, `media.width_sense` is locked off, ZBI is
 disabled, and `^JUS`, SGD setvar and the Zebra config tool all failed to make

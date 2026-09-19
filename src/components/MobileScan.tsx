@@ -5,6 +5,7 @@ import { displayCode, newCode, normalizeScan, reversedScan, validatePair, type V
 import { startCamera, cameraAvailable, type StopCamera } from '@/lib/camera'
 import type { RelaySeen } from '@/lib/printq'
 import { describeReplaced } from '@/lib/repair'
+import { CONFIRM_HINT } from '@/lib/pairguard'
 
 /**
  * The handheld page - built for a Zebra TC52 in a warehouse aisle, and used
@@ -28,6 +29,15 @@ import { describeReplaced } from '@/lib/repair'
  *     missed, and a missed mismatch is a wrong label left hanging.
  *   - Focus returns to the old-bin field after every scan, so the gun always
  *     lands somewhere useful without anyone tapping the screen with gloves on.
+ *   - One scan at a time. While a pair is being saved the fields take
+ *     nothing: a scan pulled in that window used to land in a field that was
+ *     about to be cleared, and the associate walked on believing it had
+ *     counted. Now it is refused out loud - WAIT FOR THE BEEP - and after a
+ *     refusal the fields stay shut for a beat longer, so a rhythm of
+ *     scan-scan-beep cannot roll straight through a red screen.
+ *   - A pair that looks wrong is held, not refused: labels naming different
+ *     aisles, or an old bin the WMS has never heard of. Scanning the same
+ *     new label again keeps it - the trigger is the confirmation.
  *   - A label the gun cannot read can still be typed: double-tap the field,
  *     or "Type it", brings the keyboard up for that one entry. It goes away
  *     again once the pair commits, so the gun stays the default.
@@ -41,10 +51,40 @@ type Site = { id: number; name: string }
 type Source = 'map' | 'pairs'
 type Mode = 'pair' | 'validate'
 
+/** A refusal with its body attached: a held pair comes back with `needsConfirm` and the reasons. */
+class ApiError extends Error {
+  status: number
+  body: Record<string, unknown>
+  constructor(message: string, status: number, body: Record<string, unknown>) {
+    super(message)
+    this.status = status
+    this.body = body
+  }
+}
+
+/**
+ * Every call has a deadline. A request that never answers used to leave the
+ * screen mid-save for as long as the network took to give up, with nothing to
+ * say whether the pair went in; now it fails in twelve seconds and says so.
+ */
 const api = async (url: string, init?: RequestInit) => {
-  const r = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) } })
+  let r: Response
+  try {
+    r = await fetch(url, {
+      ...init,
+      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      signal: typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(12000) : undefined,
+    })
+  } catch (e) {
+    const timedOut = e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')
+    throw new ApiError(
+      timedOut ? 'No answer from the server in 12 seconds. NOT SAVED - scan the pair again.' : 'Network problem. NOT SAVED - scan the pair again.',
+      0,
+      {},
+    )
+  }
   const body = await r.json().catch(() => ({}))
-  if (!r.ok) throw new Error(body.error || `Request failed (${r.status})`)
+  if (!r.ok) throw new ApiError(body.error || `Request failed (${r.status})`, r.status, body)
   return body
 }
 
@@ -325,8 +365,18 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const [oldBin, setOldBin] = useState('')
   const [newBin, setNewBin] = useState('')
   const [busy, setBusy] = useState(false)
+  // Shut for a beat after anything red, so the next trigger pull cannot roll
+  // through it unseen. `locked` is what the fields and the camera obey.
+  const [hold, setHold] = useState(false)
+  const locked = busy || hold
+  const lockedRef = useRef(false)
+  lockedRef.current = locked
+  // A scan that arrived while locked: said out loud, never silently eaten.
+  const [tooFast, setTooFast] = useState(false)
+  // The pair being held for a second look; the same pair again confirms it.
+  const pending = useRef<{ o: string; n: string } | null>(null)
   const [lastId, setLastId] = useState<number | null>(null)
-  const [result, setResult] = useState<{ verdict: Verdict | 'error'; text: string; sub?: string } | null>(null)
+  const [result, setResult] = useState<{ verdict: Verdict | 'error' | 'idle'; text: string; sub?: string } | null>(null)
   const [counts, setCounts] = useState({
     match: 0, mismatch: 0, unmapped: 0, checked: 0, reference: 0, // validate
     paired: 0, mine: 0, labels: 0, wms: 0, wmsPaired: 0, // pair
@@ -478,7 +528,24 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
     }
   }
 
+  /** After anything red: hold the fields shut long enough for it to be seen. */
+  const pause = (ms = 1200) => {
+    setHold(true)
+    setTimeout(() => setHold(false), ms)
+  }
+  /** A scan that came in while locked. It was not taken, and the screen says so. */
+  const refuseFast = () => {
+    setTooFast(true)
+    try {
+      navigator.vibrate?.([60, 40, 60])
+    } catch {
+      /* not supported */
+    }
+    setTimeout(() => setTooFast(false), 1800)
+  }
+
   const commit = async (rawOld: string = oldBin, rawNew: string = newBin) => {
+    if (lockedRef.current) return refuseFast()
     const o = normalizeScan(rawOld)
     const n = normalizeScan(rawNew)
     if (!o || !n) return
@@ -514,30 +581,56 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
         newRef.current?.focus()
         return
       }
+      // The same pair as the one being held means "yes, keep it".
+      const confirmed = !!pending.current && pending.current.o === o && pending.current.n === n
+      let keepOld = false
+      let red = false
       setBusy(true)
+      setResult({ verdict: 'idle', text: 'SAVING…', sub: `${o}  →  ${n}` })
       try {
-        if (repair) {
-          const r = await api('/api/pairs/repair', { method: 'POST', body: JSON.stringify({ siteId, oldBin: o, newBin: n }) })
-          setLastId(r.pair.id)
-          setResult({ verdict: 'match', text: 'REPAIRED', sub: `${o}  →  ${n}. ${describeReplaced(r.replaced)}` })
-        } else {
-          const { pair } = await api('/api/pairs', { method: 'POST', body: JSON.stringify({ siteId, oldBin: o, newBin: n }) })
-          setLastId(pair.id)
-          setResult({ verdict: 'match', text: 'PAIRED', sub: `${o}  →  ${n}` })
-        }
+        const r = await api(repair ? '/api/pairs/repair' : '/api/pairs', {
+          method: 'POST',
+          body: JSON.stringify({ siteId, oldBin: o, newBin: n, confirmed }),
+        })
+        pending.current = null
+        setLastId(r.pair.id)
+        const kept = confirmed ? ' Kept after a second look.' : ''
+        setResult(
+          repair
+            ? { verdict: 'match', text: 'REPAIRED', sub: `${o}  →  ${n}. ${describeReplaced(r.replaced)}${kept}` }
+            : { verdict: 'match', text: 'PAIRED', sub: `${o}  →  ${n}.${kept}` },
+        )
         feedback(true)
-        await refresh()
       } catch (e) {
-        setResult({ verdict: 'mismatch', text: 'REFUSED', sub: e instanceof Error ? e.message : String(e) })
+        const body = e instanceof ApiError ? e.body : {}
+        if (body.needsConfirm) {
+          // Held, not refused. The old label stays; the next scan decides.
+          pending.current = { o, n }
+          keepOld = true
+          setResult({ verdict: 'unmapped', text: 'CHECK THIS PAIR', sub: `${e instanceof Error ? e.message : ''} ${CONFIRM_HINT}` })
+        } else {
+          pending.current = null
+          setResult({ verdict: 'mismatch', text: 'REFUSED', sub: e instanceof Error ? e.message : String(e) })
+        }
+        red = true
         feedback(false)
       } finally {
         setBusy(false)
-        setOldBin('')
         setNewBin('')
-        camOld.current = ''
         setTyping(false)
-        oldRef.current?.focus()
+        if (keepOld) {
+          camOld.current = o
+          newRef.current?.focus()
+        } else {
+          setOldBin('')
+          camOld.current = ''
+          oldRef.current?.focus()
+        }
+        if (red) pause()
       }
+      // The tally is not worth waiting for: the fields reopen on the save,
+      // and the numbers along the bottom catch up a moment later.
+      void refresh()
       return
     }
 
@@ -564,7 +657,8 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
         setResult({ verdict: v, text: 'NOT PAIRED YET', sub: `${o} has not been scanned in as a pair, so nothing says what it should be. ${also ?? ''}`.trim() })
       else setResult({ verdict: v, text: 'NOT IN BIN MAP', sub: `${o} is not in the uploaded bin map. ${also ?? ''}`.trim() })
       feedback(v === 'match' && !dup)
-      await refresh()
+      if (v !== 'match' || dup) pause()
+      void refresh()
     } catch (e) {
       setResult({ verdict: 'error', text: 'FAILED', sub: e instanceof Error ? e.message : String(e) })
       feedback(false)
@@ -585,6 +679,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   // the camera loop always calls the current version without a restart.
   const camStep: 'old' | 'new' = camOld.current || oldBin.trim() ? 'new' : 'old'
   onCodeRef.current = (text: string) => {
+    if (lockedRef.current) return refuseFast()
     if (panel === 'reprint') {
       void reprint(text)
       return
@@ -667,7 +762,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
     try {
       const r = await api('/api/print', {
         method: 'POST',
-        body: JSON.stringify({ siteId, codes: [code], relay: printer || null }),
+        body: JSON.stringify({ siteId, codes: [code], relay: printer || null, kind: 'reprint' }),
       })
       const id = r.jobs[0]?.id as number
       if (!r.online.length) {
@@ -794,6 +889,13 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   }
 
   const key = (e: React.KeyboardEvent<HTMLInputElement>, from: 'old' | 'new') => {
+    // Locked: the wedge's keystrokes are dropped, and its Enter - the end of
+    // a scan that was not taken - is what gets said out loud.
+    if (lockedRef.current) {
+      e.preventDefault()
+      if (e.key === 'Enter') refuseFast()
+      return
+    }
     if (e.key !== 'Enter' && e.key !== 'Tab') return
     e.preventDefault()
     if (from === 'old') {
@@ -949,6 +1051,11 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
         </div>
       )}
       {camMsg && <div className="m-verdict error" style={{ minHeight: 0 }}><span className="m-sub">{camMsg}</span></div>}
+      {tooFast && (
+        <div className="m-fast" role="alert">
+          WAIT FOR THE BEEP — that scan was NOT taken. Scan it again.
+        </div>
+      )}
 
       {add && siteId ? (
         <MobileAdd
@@ -1019,6 +1126,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           onChange={e => setOldBin(e.target.value)}
           onKeyDown={e => key(e, 'old')}
           onDoubleClick={() => typeInto(oldRef)}
+          readOnly={locked}
           // inputMode none: DataWedge types the scan in as keystrokes, but
           // Android must not raise the on-screen keyboard over the screen.
           // Unless asked to - see typeInto.
@@ -1037,6 +1145,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           onChange={e => setNewBin(e.target.value)}
           onKeyDown={e => key(e, 'new')}
           onDoubleClick={() => typeInto(newRef)}
+          readOnly={locked}
           inputMode={typing ? 'text' : 'none'}
           autoComplete="off"
           autoCapitalize="characters"

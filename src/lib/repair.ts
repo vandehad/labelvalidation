@@ -34,6 +34,7 @@ export async function repairPair(
   rawOld: string,
   rawNew: string,
   location = 'repaired',
+  warned: string | null = null,
 ): Promise<{ pair: { id: number; old_bin: string; new_bin: string; location: string; created_at: string }; replaced: Replaced[] }> {
   const o = normalizeScan(rawOld)
   const n = normalizeScan(rawNew)
@@ -44,8 +45,8 @@ export async function repairPair(
 
   const [removed, inserted] = (await sql.transaction([
     sql`DELETE FROM pairs WHERE site_id = ${siteId} AND (old_bin = ${o} OR new_bin = ${n}) RETURNING old_bin, new_bin`,
-    sql`INSERT INTO pairs (site_id, old_bin, new_bin, location, user_id)
-        VALUES (${siteId}, ${o}, ${n}, ${location}, ${userId})
+    sql`INSERT INTO pairs (site_id, old_bin, new_bin, location, user_id, warned)
+        VALUES (${siteId}, ${o}, ${n}, ${location}, ${userId}, ${warned})
         RETURNING id, old_bin, new_bin, location, created_at`,
   ])) as [Replaced[], Array<{ id: number; old_bin: string; new_bin: string; location: string; created_at: string }>]
 

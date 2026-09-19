@@ -167,6 +167,14 @@ two things to fill in:
    and pick the **site** it prints for. *Save* — it starts polling straight
    away and remembers all of it.
 
+3. **Reprint printer, optional.** A second printer for single labels asked for
+   from the floor - a reprint, a bin added in an aisle. Those jobs arrive marked
+   *reprint*, go to this printer instead, and are taken ahead of whatever is
+   left of a batch, so nobody stands waiting behind 500 labels in the office.
+   Leave it on *Same printer as the batches* and nothing changes. The Print
+   card has a *Printer at the relay* choice for sending a short list to the
+   floor printer on purpose; a scanner's Print card only ever reprints.
+
 A relay serves **one site**. Two sites queuing at once each get their own
 labels on their own printer; a second site needs its own relay (any PC, same
 key, different site). Several relays on one site share the work, and the Print
@@ -293,6 +301,35 @@ wrong-way-round gate applies.
   code once and treats repeats within 1.5 s as the camera still looking at it.
 - It needs HTTPS. `getUserMedia` refuses on plain http, so `npm run dev` on a
   phone will say the camera could not be opened; the Vercel deployment is fine.
+
+### What the screen stops, and how hard
+
+Three strengths, on every screen and enforced again on the server:
+
+| | What | What the associate does |
+| --- | --- | --- |
+| **Refused** | Wrong label format. Old and new the wrong way round. The same code twice. **A product barcode in the old field** (nine or more digits - the scanner caught a box, not the label). A label or old bin that is already paired. | Scan the right thing. |
+| **Held** | **The two labels name different aisles.** The old bin is not in the site's WMS list. | The screen goes amber - *CHECK THIS PAIR* - and keeps the old label. Scan the **same new label again** to keep the pair, or scan the right one. No button. |
+| **Recorded** | Anything in Validate mode. | Nothing - it is writing down what is there. |
+
+Held, not refused, because both happen legitimately: a real shelf the WMS
+missed, an aisle renumbered on purpose. A pair kept after a warning carries the
+reason with it, and Reconcile lists it with who scanned it, marked *kept*. Only
+the aisle is compared - zone letters are a mapping and columns run backwards in
+whole zones, so neither would be a fair test. A pair that is both held *and*
+about to be refused by the one-for-one rule is simply refused: nobody is asked
+to confirm their way into a red screen.
+
+**One scan at a time.** While a pair is saving, the handheld's fields take
+nothing, and a scan pulled in that moment is refused out loud - *WAIT FOR THE
+BEEP - that scan was NOT taken*. After anything red the fields stay shut for a
+second, so a rhythm of scan-scan-beep cannot roll through a refusal unseen. A
+save that gets no answer in twelve seconds fails and says *NOT SAVED*. The
+MC92N0 route is a page per scan, so it has always worked this way.
+
+The Summary tab's *By person* table has a **Flagged** column - UPCs, unknown
+old bins and crossed aisles per associate - so one scanner catching boxes
+shows up the same morning, not in a report at the end.
 
 ### Repair: a shelf scanned wrong
 

@@ -43,6 +43,7 @@ export type Job = {
   first_code: string | null
   last_code: string | null
   copies: number
+  kind: 'batch' | 'reprint'
   relay: string | null
   status: JobStatus
   error: string | null
@@ -187,6 +188,13 @@ export type QueueInput = {
   /** Create the jobs held, to be released one at a time. */
   hold?: boolean
   /**
+   * 'batch' for a run off the Print card, 'reprint' for a single label asked
+   * for from the floor. A relay with a reprint printer set sends those there,
+   * so a torn label comes out beside the aisles, not at the back of a
+   * 500-label run in the office.
+   */
+  kind?: 'batch' | 'reprint'
+  /**
    * ZPL already rendered by the caller (the desktop, with its stock and nudge
    * settings). Without it the site format is rendered here. Either way the
    * codes must be in the site's stored label set - a reprint comes out of
@@ -222,10 +230,11 @@ export async function queueJobs(sql: Sql, input: QueueInput): Promise<Job[]> {
   for (const codes of chunks) {
     const zpl = input.zpl ?? zplBatch(codes, { ...DEFAULT_LABEL, widthIn, copies })
     const rows = (await sql`
-      INSERT INTO print_jobs (site_id, codes, copies, zpl, relay, user_id, status)
-      VALUES (${input.siteId}, ${codes}, ${copies}, ${zpl}, ${relay}, ${input.userId}, ${input.hold ? 'held' : 'queued'})
+      INSERT INTO print_jobs (site_id, codes, copies, zpl, relay, user_id, status, kind)
+      VALUES (${input.siteId}, ${codes}, ${copies}, ${zpl}, ${relay}, ${input.userId}, ${input.hold ? 'held' : 'queued'},
+              ${input.kind === 'reprint' ? 'reprint' : 'batch'})
       RETURNING id, site_id, cardinality(codes)::int AS labels, codes[1] AS first_code,
-                codes[cardinality(codes)] AS last_code, copies, relay, status, error,
+                codes[cardinality(codes)] AS last_code, copies, kind, relay, status, error,
                 created_at, claimed_at, claimed_by, done_at`) as Array<Omit<Job, 'username'>>
     jobs.push({ ...rows[0], username: null })
   }
@@ -244,7 +253,7 @@ export async function onlineRelays(sql: Sql, siteId: number, relay?: string | nu
 
 /* ---------- the relay's side ---------- */
 
-export type Claimed = { id: number; codes: string[]; copies: number; zpl: string }
+export type Claimed = { id: number; codes: string[]; copies: number; zpl: string; kind: 'batch' | 'reprint' }
 
 /**
  * Hand the next job for this site to the relay that asked. One statement
@@ -260,10 +269,12 @@ export async function claimNext(sql: Sql, siteId: number, name: string): Promise
     WHERE id = (
       SELECT id FROM print_jobs
       WHERE site_id = ${siteId} AND status = 'queued' AND (relay IS NULL OR relay = ${name})
-      ORDER BY id
+      -- a reprint is one label somebody is standing waiting for; it goes
+      -- ahead of whatever is left of a batch
+      ORDER BY (kind = 'reprint') DESC, id
       FOR UPDATE SKIP LOCKED
       LIMIT 1)
-    RETURNING id, codes, copies, zpl`) as Claimed[]
+    RETURNING id, codes, copies, zpl, kind`) as Claimed[]
   return rows[0] ?? null
 }
 
@@ -303,7 +314,7 @@ export async function listJobs(sql: Sql, siteId: number, limit = 80): Promise<Jo
   return (await sql`
     SELECT j.id, j.site_id, cardinality(j.codes)::int AS labels,
            j.codes[1] AS first_code, j.codes[cardinality(j.codes)] AS last_code,
-           j.copies, j.relay, j.status, j.error,
+           j.copies, j.kind, j.relay, j.status, j.error,
            u.username, j.created_at, j.claimed_at, j.claimed_by, j.done_at
     FROM print_jobs j LEFT JOIN users u ON u.id = j.user_id
     WHERE j.site_id = ${siteId}
@@ -314,7 +325,7 @@ export async function jobById(sql: Sql, id: number): Promise<Job | null> {
   const rows = (await sql`
     SELECT j.id, j.site_id, cardinality(j.codes)::int AS labels,
            j.codes[1] AS first_code, j.codes[cardinality(j.codes)] AS last_code,
-           j.copies, j.relay, j.status, j.error,
+           j.copies, j.kind, j.relay, j.status, j.error,
            u.username, j.created_at, j.claimed_at, j.claimed_by, j.done_at
     FROM print_jobs j LEFT JOIN users u ON u.id = j.user_id
     WHERE j.id = ${id}`) as Job[]

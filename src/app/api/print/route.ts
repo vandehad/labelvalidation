@@ -42,6 +42,7 @@ export async function POST(req: Request) {
       copies: Number(body.copies) || 1,
       relay,
       hold: body.hold === true,
+      kind: body.kind === 'reprint' ? 'reprint' : 'batch',
       zpl: typeof body.zpl === 'string' && body.zpl ? body.zpl : undefined,
     })
     const online = await onlineRelays(sql, siteId, relay)

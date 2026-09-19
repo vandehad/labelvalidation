@@ -50,9 +50,32 @@ npm run user -- <name> <password> [scanner|admin]
 - **The barcode is never dashed.** `displayCode` puts a dash after the third
   character for the human-readable line only. A scan of `A00-00A01` matches
   nothing in `pairs`, `labels` or `bin_map` - every code stored is undashed.
-- **No zone/aisle validation on pairing.** It was built, then removed: a
-  scanner covers ground faster than they re-declare where they stand, so it
-  mostly refused correct scans. `pairs.location` is a free-text note now.
+- **No validation against where the scanner says they are.** It was built,
+  then removed: a scanner covers ground faster than they re-declare where they
+  stand, so it mostly refused correct scans. `pairs.location` is a free-text
+  note now. What *is* checked is the two scans against each other
+  (`src/lib/pairguard.ts`): the old label's aisle against the new label's
+  aisle. Aisle only - zone letters are a per-site mapping and columns run
+  backwards in whole zones, so neither may ever be compared.
+- **Three strengths of "no", and which is which matters.** *Refused*: bad
+  format, reversed scan, a UPC in the old field (`looksLikeUpc`, 9+ digits),
+  and the unique constraints. *Held*: a crossed aisle, or an old bin not in the
+  site's WMS list - 409 `needsConfirm`, and the same pair sent again with
+  `confirmed` goes in with the reason kept in `pairs.warned`. The confirmation
+  is a second scan of the same label, never a button. *Recorded*: validation
+  mode, which refuses nothing. Do not promote a held check to a refusal - 26
+  real shelves at site 7 were not in the WMS list. `recordPair` in
+  `src/lib/pairing.ts` is the one way a pair goes in, for `/api/pairs` and
+  `/wm` alike.
+- **One scan at a time on `/scan`.** While a pair is saving the fields are
+  read-only and a scan that arrives is refused out loud (WAIT FOR THE BEEP),
+  and after anything red they stay shut for a beat. A scan pulled mid-save
+  used to land in a field about to be cleared and the associate walked on
+  believing it counted. The fields reopen on the save, not on the tally -
+  `void refresh()`, never `await` - and every call has a 12 s deadline.
+- **`pairs.old_canon` is set by a trigger, not by code.** Progress joins on it.
+  Never write it from an insert and never go back to `canon_old(old_bin)` over
+  the table - that ran on every pair of the site after every scan.
 - **A reprint comes out of what is stored, never out of the generator.** A
   replacement label has to be identical to the one it replaces, so `pickCodes`
   selects from the site's stored set and reports a code that is not in it
@@ -90,7 +113,10 @@ npm run user -- <name> <password> [scanner|admin]
   from `settings.relay_key`. Do not bind the relay off `127.0.0.1` or add a
   LAN push path - it will work on one laptop and nowhere else. `queueJobs`
   checks every code against the site's stored `labels`, so the reprint rule
-  above holds from every screen; keep that check. The one LAN listener is the
+  above holds from every screen; keep that check. Jobs carry a `kind`:
+  `reprint` for a single label asked for from the floor, `batch` for a run. A
+  relay with a reprint printer set sends reprints there, and `claimNext` hands
+  reprints out ahead of batches. The one LAN listener is the
   **Windows Mobile gateway** (`wmGateway`, opt-in by port): it forwards `/wm`
   and nothing else, because an MC92N0 cannot do TLS 1.2 and cannot reach the
   app any other way. It must never accept ZPL or expose the setup page.

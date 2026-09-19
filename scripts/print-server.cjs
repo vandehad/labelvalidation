@@ -75,14 +75,32 @@ let target = {
   printer: arg('printer') || saved.printer || '',
 }
 
+/**
+ * A second printer, for single labels asked for from the floor: a reprint of
+ * a torn label, a bin added in an aisle. Those are one label somebody is
+ * standing waiting for, and they should not come out at the back of a
+ * 500-label run on the office printer. Jobs arrive marked 'batch' or
+ * 'reprint'; with this unset, everything goes to the one printer as before.
+ */
+const savedR = saved.reprint || {}
+let reprint = {
+  mode: arg('reprint-printer') ? 'local' : arg('reprint-host') ? 'network' : savedR.mode || null,
+  host: arg('reprint-host') || savedR.host || '',
+  port: Number(arg('reprint-port') || savedR.port || 9100),
+  printer: arg('reprint-printer') || savedR.printer || '',
+}
+const targetFor = kind => (kind === 'reprint' && reprint.mode ? reprint : target)
+
 const LISTEN = Number(arg('listen', saved.listen || '9110'))
 const ALLOW = (arg('allow') || saved.allow || 'https://labelvalidation.vercel.app,http://localhost:3000')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean)
 
-const describe = () =>
-  !target.mode ? 'nothing yet' : target.mode === 'network' ? `${target.host}:${target.port}` : `queue "${target.printer}"`
+const describe = (t = target) =>
+  !t.mode ? 'nothing yet' : t.mode === 'network' ? `${t.host}:${t.port}` : `queue "${t.printer}"`
+/** Both printers in one line, for the app's relay table. */
+const describeAll = () => describe() + (reprint.mode ? ` | reprints -> ${describe(reprint)}` : '')
 
 /* ---------------- the web app's print queue ---------------- */
 
@@ -118,7 +136,7 @@ let link = {
   site: Number(arg('site') || saved.site || 0),
   siteName: saved.siteName || '',
 }
-const persist = () => saveConfig({ ...target, ...link, listen: LISTEN, allow: ALLOW.join(','), wmPort: WM_PORT })
+const persist = () => saveConfig({ ...target, reprint, ...link, listen: LISTEN, allow: ALLOW.join(','), wmPort: WM_PORT })
 
 /** This PC's LAN addresses, for the address to type into a handheld. */
 function lanAddresses() {
@@ -188,7 +206,7 @@ async function sendJob(job) {
   const pieces = splitJob(job.zpl, PIECE)
   let sent = 0
   for (let i = 0; i < pieces.length; i++) {
-    await send(pieces[i].zpl)
+    await send(pieces[i].zpl, targetFor(job.kind))
     sent += pieces[i].labels
     if (i === pieces.length - 1) break
     // Let the printer work through that piece before the next goes into its
@@ -208,7 +226,7 @@ async function sendJob(job) {
 async function pollOnce() {
   const q =
     '?relay=' + encodeURIComponent(link.name) + '&site=' + link.site +
-    '&target=' + encodeURIComponent(describe()) + '&v=' + VERSION
+    '&target=' + encodeURIComponent(describeAll()) + '&v=' + VERSION
   const r = await appFetch('/api/print/next' + q)
   if (r.status === 204) return false
   const job = await r.json().catch(() => ({}))
@@ -235,7 +253,7 @@ async function pollOnce() {
   if (stopped) console.log(`  job #${job.id}: STOPPED after ${sent} of ${labels} label(s)`)
   else if (ok) {
     queue.printed += labels * copies
-    console.log(`  job #${job.id}: ${labels} label(s) x${copies} -> ${describe()}`)
+    console.log(`  job #${job.id} (${job.kind || 'batch'}): ${labels} label(s) x${copies} -> ${describe(targetFor(job.kind))}`)
   } else console.error(`  job #${job.id} FAILED: ${error}`)
 
   const done = await appFetch('/api/print/' + job.id + '?relay=' + encodeURIComponent(link.name), {
@@ -280,14 +298,14 @@ const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').re
 
 /* ---------------- the two backends ---------------- */
 
-function sendTcp(zpl) {
+function sendTcp(zpl, t = target) {
   return new Promise((resolve, reject) => {
-    const sock = net.connect({ host: target.host, port: target.port })
+    const sock = net.connect({ host: t.host, port: t.port })
     sock.setTimeout(120000)
     sock.on('error', reject)
     sock.on('timeout', () => {
       sock.destroy()
-      reject(new Error(`Timed out talking to ${target.host}:${target.port}`))
+      reject(new Error(`Timed out talking to ${t.host}:${t.port}`))
     })
     // One socket for the whole job, and end() only once the write has drained -
     // a printer takes data far slower than a socket will accept it.
@@ -362,13 +380,13 @@ function powershell(script, env = {}) {
   })
 }
 
-async function sendWindowsRaw(zpl) {
+async function sendWindowsRaw(zpl, t = target) {
   // By path, not inline: a run of thousands of labels is far past any sane
   // command-line length.
   const file = path.join(os.tmpdir(), `lv-${Date.now()}-${Math.random().toString(36).slice(2)}.zpl`)
   fs.writeFileSync(file, zpl, 'binary')
   try {
-    await powershell(PS_RAW, { LV_PRINTER: target.printer, LV_FILE: file })
+    await powershell(PS_RAW, { LV_PRINTER: t.printer, LV_FILE: file })
   } finally {
     try {
       fs.unlinkSync(file)
@@ -388,7 +406,7 @@ async function listPrinters() {
   }
 }
 
-const send = zpl => (target.mode === 'network' ? sendTcp(zpl) : sendWindowsRaw(zpl))
+const send = (zpl, t = target) => (t.mode === 'network' ? sendTcp(zpl, t) : sendWindowsRaw(zpl, t))
 
 /* ---------------- setup page ---------------- */
 
@@ -442,6 +460,34 @@ const PAGE = printers => `<!doctype html>
   <button id="save">Save and use this printer</button>
   <button class="ghost" id="test">Print a test label</button>
   <div class="msg" id="msg"></div>
+</div>
+<div class="card">
+  <h2>Reprint printer <span style="font-weight:normal;color:var(--muted)">- optional</span></h2>
+  <p>Single labels asked for from the floor - a reprint of a torn label, a bin added in an aisle - can come
+     out of a different printer from the big runs, so nobody waits at the back of a 500-label batch. Put this
+     one where the scanning is happening.</p>
+  <p>Reprints go to <span class="now" id="rnow">${reprint.mode ? esc(describe(reprint)) : 'the same printer as the batches'}</span></p>
+  <label>Connection</label>
+  <select id="rmode">
+    <option value=""${!reprint.mode ? ' selected' : ''}>Same printer as the batches</option>
+    <option value="network"${reprint.mode === 'network' ? ' selected' : ''}>Network - the printer has its own IP address</option>
+    <option value="local"${reprint.mode === 'local' ? ' selected' : ''}>USB or shared - installed on this PC</option>
+  </select>
+  <div id="rnet" hidden>
+    <div class="row">
+      <div><label>IP address</label><input id="rhost" value="${esc(reprint.host)}" placeholder="192.168.60.82"></div>
+      <div style="flex:0 0 110px"><label>Port</label><input id="rport" value="${reprint.port}"></div>
+    </div>
+  </div>
+  <div id="rloc" hidden>
+    <label>Installed printer</label>
+    <select id="rprinter">
+      ${printers.length ? printers.map(p => `<option${p === reprint.printer ? ' selected' : ''}>${p}</option>`).join('') : '<option value="">none found</option>'}
+    </select>
+  </div>
+  <button id="rsave">Save the reprint printer</button>
+  <button class="ghost" id="rtest">Print a test label there</button>
+  <div class="msg" id="rmsg"></div>
 </div>
 <div class="card">
   <h2>Connect to the web app</h2>
@@ -540,6 +586,20 @@ const PAGE = printers => `<!doctype html>
    qsay('ok', 'Saving…')
    const [ok, d] = await post('/app', linkBody())
    qsay(ok ? 'ok' : 'bad', ok ? 'Printing for ' + d.site + '. Leave this running.' : (d.error || 'Could not save.'))
+ }
+ const rsync = () => { const m = $('rmode').value; $('rnet').hidden = m !== 'network'; $('rloc').hidden = m !== 'local' }
+ $('rmode').onchange = rsync; rsync()
+ const rsay = (k, t) => { $('rmsg').className = 'msg ' + k; $('rmsg').textContent = t }
+ $('rsave').onclick = async () => {
+   const [ok, d] = await post('/target-reprint', {
+     mode: $('rmode').value, host: $('rhost').value.trim(), port: Number($('rport').value) || 9100, printer: $('rprinter').value,
+   })
+   if (ok) { $('rnow').textContent = d.target; rsay('ok', 'Saved.') } else rsay('bad', d.error || 'Could not save that.')
+ }
+ $('rtest').onclick = async () => {
+   rsay('ok', 'Sending…')
+   const [ok, d] = await post('/test-reprint', {})
+   rsay(ok ? 'ok' : 'bad', ok ? 'Sent. A label should come out of the reprint printer.' : (d.error || 'Failed.'))
  }
  const ago = t => (t ? Math.round((Date.now() - t) / 1000) + 's ago' : 'never')
  async function refreshStatus() {
@@ -695,6 +755,7 @@ const server = http.createServer(async (req, res) => {
       return void json(res, 200, {
         ok: Boolean(target.mode),
         target: describe(),
+        reprint: reprint.mode ? describe(reprint) : null,
         mode: target.mode,
         configured: Boolean(target.mode),
         queue: {
@@ -773,6 +834,30 @@ const server = http.createServer(async (req, res) => {
       return void json(res, 200, { ok: true, site: found.name })
     }
 
+    if (req.method === 'POST' && url === '/target-reprint') {
+      const body = JSON.parse((await readBody(req, 64 * 1024)) || '{}')
+      if (body.mode === 'network' && !String(body.host || '').trim())
+        return void json(res, 400, { error: 'An IP address is needed.' })
+      if (body.mode === 'local' && !String(body.printer || '').trim())
+        return void json(res, 400, { error: 'Pick an installed printer.' })
+      reprint = {
+        mode: body.mode === 'local' ? 'local' : body.mode === 'network' ? 'network' : null,
+        host: String(body.host || '').trim(),
+        port: Number(body.port) || 9100,
+        printer: String(body.printer || ''),
+      }
+      persist()
+      console.log('  reprints go to ' + (reprint.mode ? describe(reprint) : 'the batch printer'))
+      return void json(res, 200, { ok: true, target: reprint.mode ? describe(reprint) : 'the same printer as the batches' })
+    }
+
+    if (req.method === 'POST' && url === '/test-reprint') {
+      if (!reprint.mode) return void json(res, 409, { error: 'No reprint printer is set - reprints go to the batch printer.' })
+      await send(TEST_ZPL, reprint)
+      console.log('  test label -> reprint printer ' + describe(reprint))
+      return void json(res, 200, { ok: true })
+    }
+
     if (req.method === 'POST' && (url === '/print' || url === '/test')) {
       if (!target.mode) return void json(res, 409, { error: 'No printer chosen yet. Open http://localhost:' + LISTEN })
       const zpl = url === '/test' ? TEST_ZPL : await readBody(req)
@@ -807,6 +892,7 @@ server.listen(LISTEN, '127.0.0.1', () => {
   console.log('  ' + '-'.repeat(40))
   console.log('  setup page  ' + url)
   console.log('  printing to ' + describe())
+  if (reprint.mode) console.log('  reprints to ' + describe(reprint))
   console.log('  accepting   ' + ALLOW.join(', '))
   if (link.key && link.site) console.log(`  queue       ${link.app} as "${link.name}" for ${link.siteName || 'site ' + link.site}`)
   else console.log('  queue       not connected - open the setup page to connect to the web app')

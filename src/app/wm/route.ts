@@ -1,10 +1,12 @@
-import { db, isUniqueViolation } from '@/lib/db'
+import { db } from '@/lib/db'
 import { currentUser, findUser, verifyPassword, sessionFor, setSessionCookie } from '@/lib/auth'
 import { verdictFor, normalizeScan, reversedScan, newCode, displayCode, validatePair } from '@/lib/bins'
 import { mintOptions, mintBin, adoptBin, checkPick, MintRefused } from '@/lib/mint'
 import { queueJobs, onlineRelays, QueueRefused } from '@/lib/printq'
 import { resolveLabel } from '@/lib/lookup'
 import { repairPair, unpair, describeReplaced, RepairRefused } from '@/lib/repair'
+import { recordPair, softWarnings } from '@/lib/pairing'
+import { CONFIRM_HINT } from '@/lib/pairguard'
 import { cookies } from 'next/headers'
 
 export const dynamic = 'force-dynamic'
@@ -164,15 +166,21 @@ ${st.mode === 'pair' ? '<a href="/wm?do=noold">No old label</a> &nbsp;|&nbsp; <a
   )
 }
 
-function newScreen(oldBin: string, err = '', mode: Mode = 'validate', repair = false) {
+/**
+ * `confirm` holds a pair for a second look: the page carries the new label
+ * that raised the warning, and if the very next scan is that same label the
+ * pair goes in. No button - the trigger is the confirmation.
+ */
+function newScreen(oldBin: string, err = '', mode: Mode = 'validate', repair = false, confirm = '') {
   return page(
     'Scan new label',
     `${bar('', repair ? 'REPAIR' : titleOf(mode))}
-${err ? `<table><tr><td bgcolor="#a32020"><font color="#ffffff"><b>${esc(err)}</b></font></td></tr></table>` : ''}
+${err ? `<table><tr><td bgcolor="${confirm ? '#8a6100' : '#a32020'}"><font color="#ffffff"><b>${confirm ? 'CHECK THIS PAIR: ' : ''}${esc(err)}</b></font></td></tr></table>` : ''}
 <table><tr><td bgcolor="#e6f5ec"><b>OLD:</b> ${esc(oldBin)}</td></tr></table>
 <form method="post" action="/wm">
 <input type="hidden" name="do" value="new">
 ${repair ? '<input type="hidden" name="repair" value="1">' : ''}
+${confirm ? `<input type="hidden" name="confirm" value="${esc(confirm)}">` : ''}
 <input type="hidden" name="old" value="${esc(oldBin)}">
 <div class="lbl">2 &nbsp; LABEL HUNG ON IT &nbsp; &mdash; scan it</div>
 <div><input class="scan" type="text" name="new"></div>
@@ -342,7 +350,7 @@ ${done ? `<table><tr><td bgcolor="${done.colour}"><font color="#ffffff"><div cla
 async function printOne(siteId: number, userId: number, code: string): Promise<{ colour: string; text: string }> {
   try {
     const sql = db()
-    await queueJobs(sql, { siteId, userId, codes: [code] })
+    await queueJobs(sql, { siteId, userId, codes: [code], kind: 'reprint' })
     const online = await onlineRelays(sql, siteId)
     return online.length
       ? { colour: '#1b7f4b', text: `Label sent to ${online.join(', ')}. Hang it when it comes out.` }
@@ -367,7 +375,7 @@ async function tallyFor(st: Step): Promise<string> {
     const sql = db()
     if (st.mode === 'pair') {
       const p = (await sql`
-        WITH pc AS (SELECT DISTINCT canon_old(old_bin) AS c FROM pairs WHERE site_id = ${st.site})
+        WITH pc AS (SELECT DISTINCT old_canon AS c FROM pairs WHERE site_id = ${st.site})
         SELECT (SELECT count(*)::int FROM pairs WHERE site_id = ${st.site}) AS pairs,
                (SELECT count(*)::int FROM labels WHERE site_id = ${st.site}) AS labels,
                (SELECT count(*)::int FROM old_bins WHERE site_id = ${st.site}) AS wms,
@@ -559,10 +567,17 @@ export async function POST(req: Request) {
 
     const sql = db()
 
+    // The label that raised a warning on the last page, scanned again.
+    const confirmed = normalizeScan(String(form.get('confirm') ?? '')) === newBin
+
     // Repair: the explicit override. Whatever either bin was paired to goes.
     if (repair) {
       try {
-        const r = await repairPair(sql, st.site, user.uid, oldBin, newBin, 'wm repaired')
+        const warnings = validatePair(oldBin, newBin, { enforceFormat: true, location: null })
+          ? []
+          : await softWarnings(sql, st.site, oldBin, newBin)
+        if (warnings.length && !confirmed) return newScreen(oldBin, `${warnings.join(' ')} ${CONFIRM_HINT}`, 'pair', true, newBin)
+        const r = await repairPair(sql, st.site, user.uid, oldBin, newBin, 'wm repaired', warnings.join(' ') || null)
         return oldScreen(
           st,
           { colour: '#1b7f4b', head: 'REPAIRED', sub: `${oldBin} -> ${newBin}. ${describeReplaced(r.replaced)}` },
@@ -579,32 +594,13 @@ export async function POST(req: Request) {
     // one-for-one constraints - the same rules as /api/pairs, because a pair
     // recorded from this handheld is worth exactly as much as any other.
     if (st.mode === 'pair') {
-      const why = validatePair(oldBin, newBin, { enforceFormat: true, location: null })
-      if (why) return newScreen(oldBin, why, 'pair')
-      try {
-        await sql`
-          INSERT INTO pairs (site_id, old_bin, new_bin, location, user_id)
-          VALUES (${st.site}, ${oldBin}, ${newBin}, 'wm', ${user.uid})`
-      } catch (e) {
-        if (!isUniqueViolation(e)) throw e
-        const which = e.constraint === 'pairs_new_unique' ? 'new' : 'old'
-        const clash = (await (which === 'new'
-          ? sql`SELECT p.old_bin, p.new_bin, u.username FROM pairs p LEFT JOIN users u ON u.id = p.user_id
-                WHERE p.site_id = ${st.site} AND p.new_bin = ${newBin} LIMIT 1`
-          : sql`SELECT p.old_bin, p.new_bin, u.username FROM pairs p LEFT JOIN users u ON u.id = p.user_id
-                WHERE p.site_id = ${st.site} AND p.old_bin = ${oldBin} LIMIT 1`)) as Array<{ old_bin: string; new_bin: string; username: string | null }>
-        const c = clash[0]
-        const by = c?.username ? ` (scanned by ${c.username})` : ''
-        if (which === 'new')
-          // The label is on another shelf: keep the old bin, ask for a different label.
-          return newScreen(oldBin, `${newBin} is already used by ${c?.old_bin ?? 'another bin'}${by}. Scan a different label.`, 'pair')
-        return oldScreen(
-          st,
-          { colour: '#a32020', head: 'REFUSED', sub: `${oldBin} is already paired to ${c?.new_bin ?? 'a label'}${by}.` },
-          await tallyFor(st),
-        )
-      }
-      return oldScreen(st, { colour: '#1b7f4b', head: 'PAIRED', sub: `${oldBin} -> ${newBin}` }, await tallyFor(st))
+      const r = await recordPair(sql, st.site, user, oldBin, newBin, { location: 'wm', confirmed })
+      if (r.ok) return oldScreen(st, { colour: '#1b7f4b', head: 'PAIRED', sub: `${oldBin} -> ${newBin}` }, await tallyFor(st))
+      if (r.needsConfirm) return newScreen(oldBin, `${r.error} ${CONFIRM_HINT}`, 'pair', false, newBin)
+      // The label is on another shelf: keep the old bin, ask for a different label.
+      if (r.conflict === 'new') return newScreen(oldBin, `${r.error} Scan a different label.`, 'pair')
+      if (r.conflict === 'old') return oldScreen(st, { colour: '#a32020', head: 'REFUSED', sub: r.error }, await tallyFor(st))
+      return newScreen(oldBin, r.error, 'pair')
     }
     const [expectedRows, ownerRows] = await Promise.all([
       st.source === 'map'

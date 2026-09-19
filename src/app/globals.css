@@ -140,6 +140,11 @@ select.site{font-weight:700}
   letter-spacing:2px;border:2px dashed var(--line);border-radius:10px;color:var(--ink)}
 .m-code.clash{border-color:#b3261e;color:#b3261e}
 
+/* A scan that arrived while the last one was still saving. Loud on purpose:
+   it is the one message that means "what you just did did not count". */
+.m-fast{background:#111;color:#ffd24a;font-weight:800;font-size:17px;line-height:1.25;padding:12px 14px;
+  text-align:center;border-top:3px solid #ffd24a;border-bottom:3px solid #ffd24a}
+
 /* Camera mode on a phone. The guide box is where to put the label; the hint
    says which of the two scans is next. */
 .m-cam{position:relative;background:#000}

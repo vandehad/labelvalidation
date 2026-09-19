@@ -35,6 +35,8 @@ import {
 import { debounceCode } from '../src/lib/camera.ts'
 import { parseBearer, relayName, chunkCodes, newRelayKey, sameKey } from '../src/lib/printq.ts'
 import { canonOld, cleanOldBins, suggestOldBin, looksLikeWmsBin } from '../src/lib/oldbins.ts'
+import { oldAisle, aisleWarning } from '../src/lib/pairguard.ts'
+import { looksLikeUpc } from '../src/lib/bins.ts'
 import { writeFileSync, unlinkSync } from 'node:fs'
 
 let pass = 0
@@ -571,6 +573,27 @@ ok('the separator is configurable', displayCode('A0000A01', ' - ') === 'A00 - 00
   ok('nothing in, nothing out', chunkCodes([]).length === 0)
   ok('the default chunk is one job per 500', chunkCodes(Array.from({ length: 1001 }, (_, i) => `A${String(i).padStart(4, '0')}A01`)).length === 3)
 }
+
+/* ---------- guards at scan time: a UPC is refused, a crossed aisle is held ---------- */
+ok('twelve digits is a UPC', looksLikeUpc('008536036159'))
+ok('fourteen digits is a case code', looksLikeUpc('10028851155103'))
+ok('eight digits is a real undashed bin, not a UPC', !looksLikeUpc('01090305'))
+ok('seven digits is a real undashed bin, not a UPC', !looksLikeUpc('7421915'))
+ok('a dashed bin is not a UPC', !looksLikeUpc('01-09-03-05'))
+ok('validatePair refuses a UPC in the old field, in words', /product barcode/.test(validatePair('055644773803', 'D2115D01', { enforceFormat: true, location: null }) ?? ''))
+ok('and lets a real pair through', validatePair('04-21-04-04', 'D2115D01', { enforceFormat: true, location: null }) === null)
+
+ok('aisle from a dashed WMS bin', oldAisle('03-14-13-03') === 14)
+ok('aisle from an unpadded scan of it', oldAisle('3-14-13-3') === 14)
+ok('aisle from eight bare digits', oldAisle('03141303') === 14)
+ok('aisle from seven bare digits, one-digit zone', oldAisle('7421915') === 42)
+ok('aisle from a lettered old bin', oldAisle('A-12-3-4') === 12)
+ok('no aisle from something that is not a bin', oldAisle('DAVICO') === null)
+ok('same aisle, no warning - whatever the column does', aisleWarning('04-21-01-05', 'D2118E01') === null)
+ok('crossed aisle is a warning that names both', /aisle 14.*aisle 15/.test(aisleWarning('03-14-13-03', 'C1514D01') ?? ''))
+ok('the H01-labels-down-six-aisles case is caught', aisleWarning('08-04-03-01', 'H0110C01') !== null)
+ok('an old bin with no readable aisle is never warned about', aisleWarning('DAVICO', 'C1514D01') === null)
+ok('a floor bin at WMS column 88 keeps its aisle', aisleWarning('01-10-88-01', 'A1000A01') === null)
 
 /* ---------- generating from an explicit list of codes ---------- */
 // For shelves the grid cannot express: site 7's WMS keeps a floor position

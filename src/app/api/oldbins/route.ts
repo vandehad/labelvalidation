@@ -1,7 +1,7 @@
 import { db } from '@/lib/db'
 import { requireUser, requireAdmin } from '@/lib/auth'
 import { json, fail } from '@/lib/api'
-import { cleanOldBins, loadOldBins, progress, unpairedOldBins, suspectPairs } from '@/lib/oldbins'
+import { cleanOldBins, loadOldBins, progress, unpairedOldBins, suspectPairs, aisleMismatches } from '@/lib/oldbins'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -23,7 +23,11 @@ export async function GET(req: Request) {
     const sql = db()
     const all = q.get('all') === '1' || q.get('format') === 'csv'
     const p = await progress(sql, siteId)
-    const [unpaired, suspects] = await Promise.all([unpairedOldBins(sql, siteId, all ? null : 500), p_suspects(sql, siteId, p)])
+    const [unpaired, suspects, aisle] = await Promise.all([
+      unpairedOldBins(sql, siteId, all ? null : 500),
+      p_suspects(sql, siteId, p),
+      aisleMismatches(sql, siteId),
+    ])
     if (q.get('format') === 'csv') {
       const site = (await sql`SELECT name FROM sites WHERE id = ${siteId}`) as Array<{ name: string }>
       const cell = (v: string) => (/[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
@@ -41,6 +45,12 @@ export async function GET(req: Request) {
             .map(cell)
             .join(','),
         )
+      for (const a of aisle)
+        lines.push(
+          [a.kept ? 'aisle_mismatch_kept_after_warning' : 'aisle_mismatch', a.old_bin, a.new_bin, a.username ?? '', `old aisle ${a.old_aisle}, label aisle ${a.new_aisle}`]
+            .map(cell)
+            .join(','),
+        )
       const body = lines.join('\r\n') + '\r\n'
       return new Response(body, {
         headers: {
@@ -50,7 +60,7 @@ export async function GET(req: Request) {
         },
       })
     }
-    return json({ ...p, unpaired, truncated: !all && unpaired.length === 500, suspects })
+    return json({ ...p, unpaired, truncated: !all && unpaired.length === 500, suspects, aisle })
   } catch (e) {
     return fail(e)
   }

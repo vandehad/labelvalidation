@@ -22,6 +22,7 @@ import { readTable, parseDelimited } from '@/lib/sheet'
 import { zplBatch, barcodeData, type LabelSpec, type Symbology } from '@/lib/zpl'
 import type { Job as PrintJob, RelaySeen } from '@/lib/printq'
 import { describeReplaced } from '@/lib/repair'
+import { CONFIRM_HINT } from '@/lib/pairguard'
 
 type User = { name: string; role: string }
 type Site = { id: number; name: string; status: string; labels: number; pairs: number }
@@ -54,10 +55,40 @@ type Check = {
   created_at: string
 }
 
+/** A refusal with its body attached: a held pair comes back with `needsConfirm` and the reasons. */
+class ApiError extends Error {
+  status: number
+  body: Record<string, unknown>
+  constructor(message: string, status: number, body: Record<string, unknown>) {
+    super(message)
+    this.status = status
+    this.body = body
+  }
+}
+
+/**
+ * Every call has a deadline. A request that never answers used to leave the
+ * screen mid-save for as long as the network took to give up, with nothing to
+ * say whether the pair went in; now it fails in twelve seconds and says so.
+ */
 const api = async (url: string, init?: RequestInit) => {
-  const r = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) } })
+  let r: Response
+  try {
+    r = await fetch(url, {
+      ...init,
+      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      signal: typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(12000) : undefined,
+    })
+  } catch (e) {
+    const timedOut = e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')
+    throw new ApiError(
+      timedOut ? 'No answer from the server in 12 seconds. NOT SAVED - scan the pair again.' : 'Network problem. NOT SAVED - scan the pair again.',
+      0,
+      {},
+    )
+  }
   const body = await r.json().catch(() => ({}))
-  if (!r.ok) throw new Error(body.error || `Request failed (${r.status})`)
+  if (!r.ok) throw new ApiError(body.error || `Request failed (${r.status})`, r.status, body)
   return body
 }
 
@@ -293,6 +324,8 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
   const [lastPair, setLastPair] = useState<{ id: number; old_bin: string; new_bin: string } | null>(null)
   // Repair: armed by hand, stays on until turned off by hand - see src/lib/repair.ts.
   const [repair, setRepair] = useState(false)
+  // A pair held for a second look; the same pair scanned again keeps it.
+  const pending = useRef<{ o: string; n: string } | null>(null)
   const [totals, setTotals] = useState<{ pairs: number; labels: number; wms: number; wms_paired: number }>({ pairs: 0, labels: 0, wms: 0, wms_paired: 0 })
   const [byUser, setByUser] = useState<Array<{ username: string; n: number }>>([])
   const [sound, setSound] = useState(true)
@@ -348,12 +381,14 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
     }
     setBusy(true)
     try {
+      const confirmed = !!pending.current && pending.current.o === o && pending.current.n === n
       if (repair) {
-        // One shot: whatever either bin was paired to goes, this pair goes in.
+        // Whatever either bin was paired to goes, this pair goes in.
         const r = await api('/api/pairs/repair', {
           method: 'POST',
-          body: JSON.stringify({ siteId, oldBin: o, newBin: n, location: where.trim() || null }),
+          body: JSON.stringify({ siteId, oldBin: o, newBin: n, location: where.trim() || null, confirmed }),
         })
+        pending.current = null
         const gone = new Set((r.replaced as Array<{ old_bin: string }>).map(x => x.old_bin))
         setPairs(p => [r.pair, ...p.filter(x => !gone.has(x.old_bin))])
         setLastPair({ id: r.pair.id, old_bin: r.pair.old_bin, new_bin: r.pair.new_bin })
@@ -372,8 +407,10 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
           oldBin: o,
           newBin: n,
           location: where.trim() || null,
+          confirmed,
         }),
       })
+      pending.current = null
       setPairs(p => [pair, ...p])
       setLastPair({ id: pair.id, old_bin: pair.old_bin, new_bin: pair.new_bin })
       setTotals(t => ({ ...t, pairs: t.pairs + 1 }))
@@ -383,7 +420,15 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
       setNewBin('')
       oldRef.current?.focus()
     } catch (e) {
-      flash('bad', e instanceof Error ? e.message : String(e))
+      if (e instanceof ApiError && e.body.needsConfirm) {
+        // Held, not refused: the old bin stays, the next scan decides.
+        pending.current = { o, n }
+        flash('warn', `CHECK THIS PAIR — ${e.message} ${CONFIRM_HINT}`)
+        setNewBin('')
+      } else {
+        pending.current = null
+        flash('bad', e instanceof Error ? e.message : String(e))
+      }
       beep(false)
       newRef.current?.select()
     } finally {
@@ -456,6 +501,7 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
               onChange={e => setOldBin(e.target.value)}
               onKeyDown={e => key(e, 'old')}
               autoComplete="off"
+              readOnly={busy}
               spellCheck={false}
               placeholder="scan…"
               autoFocus
@@ -469,6 +515,7 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
               onChange={e => setNewBin(e.target.value)}
               onKeyDown={e => key(e, 'new')}
               autoComplete="off"
+              readOnly={busy}
               spellCheck={false}
               placeholder="scan…"
             />
@@ -913,6 +960,9 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
   // batch in the printer's buffer cannot be pulled back, so the place to stop
   // a run that has gone wrong is before the next batch leaves the app.
   const [hold, setHold] = useState(true)
+  // Which of the relay's two printers: the batch printer for runs, or the
+  // reprint printer out on the floor. A scanner's card only ever reprints.
+  const [dest, setDest] = useState<'batch' | 'reprint'>(limited ? 'reprint' : 'batch')
   const [dpi, setDpi] = useState<203 | 300>(203)
   const [symbology, setSymbology] = useState<Symbology>('code39')
   // The site's own format is a 4in format - its padded 14-character symbol at
@@ -1141,7 +1191,7 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
         setMsg({ kind: 'warn', text: `${holding ? 'Preparing' : 'Queuing'} ${Math.min(i + CHUNK, selected.length).toLocaleString()} of ${selected.length.toLocaleString()}…` })
         const r = await api('/api/print', {
           method: 'POST',
-          body: JSON.stringify({ siteId, codes: slice, copies: spec.copies, relay: pinned, hold: holding, zpl: zplBatch(slice, spec) }),
+          body: JSON.stringify({ siteId, codes: slice, copies: spec.copies, relay: pinned, hold: holding, kind: dest, zpl: zplBatch(slice, spec) }),
         })
         online = r.online
         n++
@@ -1311,6 +1361,15 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
             <option value="direct">A relay on this PC, directly</option>
           </select>
         </div>
+        {route !== 'direct' && (
+          <div style={{ flex: '0 1 260px' }}>
+            <label>Printer at the relay</label>
+            <select value={dest} onChange={e => setDest(e.target.value as 'batch' | 'reprint')} disabled={limited}>
+              <option value="batch">Batch printer — for runs</option>
+              <option value="reprint">Reprint printer — out on the floor</option>
+            </select>
+          </div>
+        )}
         {route === 'direct' ? (
           <>
             <div style={{ flex: '1 1 220px' }}>
@@ -1493,7 +1552,7 @@ type SummaryData = {
   byZone: Array<{ zone: string; total: number; paired: number }>
   perHour: Array<{ hour: string; n: number }>
   perDay: Array<{ day: string; n: number; active_hours: number; people: number }>
-  byUser: Array<{ username: string; pairs: number; last_hour: number; today: number; active_hours: number; last_seen: string }>
+  byUser: Array<{ username: string; pairs: number; last_hour: number; today: number; active_hours: number; last_seen: string; flagged: number }>
   rate: { lastHour: number; last8h: number; activeHours: number; avgPerActiveHour: number; hoursLeft: number | null }
 }
 
@@ -1674,6 +1733,7 @@ function Summary({ siteId }: { siteId: number }) {
                 <th>Today</th>
                 <th>Last hour</th>
                 <th>Per active hour</th>
+                <th>Flagged</th>
                 <th>Last seen</th>
               </tr>
             </thead>
@@ -1685,6 +1745,7 @@ function Summary({ siteId }: { siteId: number }) {
                   <td>{u.today.toLocaleString()}</td>
                   <td>{u.last_hour.toLocaleString()}</td>
                   <td>{u.active_hours ? (u.pairs / u.active_hours).toFixed(0) : '—'}</td>
+                  <td>{u.flagged ? <span className="pill bad">{u.flagged.toLocaleString()}</span> : <span className="hint">0</span>}</td>
                   <td className="hint">{new Date(u.last_seen).toLocaleString()}</td>
                 </tr>
               ))}
@@ -2291,6 +2352,7 @@ function Validate({ siteId, siteName, user }: { siteId: number; siteName: string
               onChange={e => setOldBin(e.target.value)}
               onKeyDown={e => key(e, 'old')}
               autoComplete="off"
+              readOnly={busy}
               spellCheck={false}
               placeholder="scan…"
               autoFocus
@@ -2304,6 +2366,7 @@ function Validate({ siteId, siteName, user }: { siteId: number; siteName: string
               onChange={e => setNewBin(e.target.value)}
               onKeyDown={e => key(e, 'new')}
               autoComplete="off"
+              readOnly={busy}
               spellCheck={false}
               placeholder="scan…"
             />
@@ -2591,6 +2654,7 @@ function WmsReport({ siteId }: { siteId: number }) {
     unpaired: string[]
     truncated: boolean
     suspects: Array<{ old_bin: string; new_bin: string; username: string | null; kind: 'upc' | 'similar' | 'unknown' | 'extra'; suggestions: string[] }>
+    aisle: Array<{ old_bin: string; new_bin: string; username: string | null; old_aisle: number; new_aisle: number; kept: boolean }>
   } | null>(null)
   const [err, setErr] = useState('')
   const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
@@ -2716,6 +2780,42 @@ function WmsReport({ siteId }: { siteId: number }) {
                 </tbody>
               </table>
             </div>
+          )}
+          {d.aisle.length > 0 && (
+            <>
+              <h2 style={{ fontSize: 14, marginTop: 14, color: 'var(--bad)' }}>
+                Old bin and label name different aisles ({d.aisle.length.toLocaleString()}) — walk these
+              </h2>
+              <p className="hint">
+                Columns can run backwards and zone letters are a mapping, but the aisle carries over. Each of these is a
+                slip at an aisle change or labels hung down the wrong aisle. New ones are held on screen at scan time;
+                <em> kept</em> means the associate was warned and scanned it again anyway.
+              </p>
+              <div className="scroll" style={{ maxHeight: 260 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Who</th>
+                      <th>Old bin</th>
+                      <th>Label</th>
+                      <th>Aisles</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {d.aisle.map(a => (
+                      <tr key={`${a.old_bin}|${a.new_bin}`}>
+                        <td>{a.username ?? '?'}</td>
+                        <td><code>{a.old_bin}</code></td>
+                        <td><code>{a.new_bin}</code></td>
+                        <td>{a.old_aisle} → {a.new_aisle}</td>
+                        <td>{a.kept ? <span className="pill warn">kept</span> : null}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
           {d.suspects.some(s => s.kind === 'extra') && (
             <>
@@ -3202,7 +3302,7 @@ function AddBin({ siteId, onAdded }: { siteId: number; onAdded: () => void }) {
     setBusy(true)
     setMsg(null)
     try {
-      const r = await api('/api/print', { method: 'POST', body: JSON.stringify({ siteId, codes: [code] }) })
+      const r = await api('/api/print', { method: 'POST', body: JSON.stringify({ siteId, codes: [code], kind: 'reprint' }) })
       setMsg(
         r.online.length
           ? { kind: 'ok', text: `${code} is printing at ${r.online.join(', ')}. Hang it, then pair it like any other bin.` }

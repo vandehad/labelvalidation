@@ -191,6 +191,23 @@ const steps = [
     )`,
   ],
   ['old_bins by canon', `CREATE INDEX IF NOT EXISTS old_bins_canon_idx ON old_bins (site_id, canon)`],
+
+  // ---- pairs carry their own canonical old bin ---------------------------
+  // Progress used to compute canon_old() over every pair of the site on every
+  // tally - which the handheld asks for after every scan. Stored once by a
+  // trigger instead, so no insert path can forget it, and indexed.
+  ['pairs.old_canon', `ALTER TABLE pairs ADD COLUMN IF NOT EXISTS old_canon text`],
+  ['pairs_set_canon()', `CREATE OR REPLACE FUNCTION pairs_set_canon() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN NEW.old_canon := canon_old(NEW.old_bin); RETURN NEW; END $$`],
+  ['drop old pairs_canon trigger', `DROP TRIGGER IF EXISTS pairs_canon ON pairs`],
+  ['pairs_canon trigger', `CREATE TRIGGER pairs_canon BEFORE INSERT OR UPDATE OF old_bin ON pairs
+      FOR EACH ROW EXECUTE FUNCTION pairs_set_canon()`],
+  ['backfill pairs.old_canon', `UPDATE pairs SET old_canon = canon_old(old_bin) WHERE old_canon IS NULL`],
+  ['pairs by canon', `CREATE INDEX IF NOT EXISTS pairs_canon_idx ON pairs (site_id, old_canon)`],
+  // Why a pair was held for a second look and kept anyway - see src/lib/pairing.ts.
+  ['pairs.warned', `ALTER TABLE pairs ADD COLUMN IF NOT EXISTS warned text`],
+  // Which printer a job is for: 'batch' runs, or 'reprint' singles from the floor.
+  ['print_jobs.kind', `ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'batch'`],
 ]
 
 if (printOnly) {

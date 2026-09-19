@@ -1,7 +1,7 @@
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { json, fail } from '@/lib/api'
-import { suspectPairs } from '@/lib/oldbins'
+import { suspectPairs, aisleMismatches } from '@/lib/oldbins'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -22,8 +22,8 @@ export async function GET(req: Request) {
     if (!siteId) return json({ error: 'site is required' }, 400)
     const sql = db()
 
-    const [totals, byZone, perHour, perDay, byUser, rate, suspects] = await Promise.all([
-      sql`WITH pc AS (SELECT DISTINCT canon_old(old_bin) AS c FROM pairs WHERE site_id = ${siteId})
+    const [totals, byZone, perHour, perDay, byUser, rate, suspects, aisle] = await Promise.all([
+      sql`WITH pc AS (SELECT DISTINCT old_canon AS c FROM pairs WHERE site_id = ${siteId})
           SELECT
             (SELECT count(*)::int FROM pairs WHERE site_id = ${siteId}) AS pairs,
             (SELECT count(*)::int FROM pairs WHERE site_id = ${siteId} AND origin = 'minted') AS minted,
@@ -36,7 +36,7 @@ export async function GET(req: Request) {
             (SELECT max(created_at) FROM pairs WHERE site_id = ${siteId}) AS last_pair`,
       // WMS zone = first part of the canonical id ("01"). Anything not in that
       // shape lands under its own first character so nothing is dropped.
-      sql`WITH pc AS (SELECT DISTINCT canon_old(old_bin) AS c FROM pairs WHERE site_id = ${siteId})
+      sql`WITH pc AS (SELECT DISTINCT old_canon AS c FROM pairs WHERE site_id = ${siteId})
           SELECT split_part(o.canon, '-', 1) AS zone,
                  count(*)::int AS total,
                  count(pc.c)::int AS paired
@@ -66,6 +66,7 @@ export async function GET(req: Request) {
             count(DISTINCT date_trunc('hour', created_at))::int AS active_hours
           FROM pairs WHERE site_id = ${siteId}`,
       suspectPairs(sql, siteId),
+      aisleMismatches(sql, siteId),
     ])
 
     const t = totals[0] as Record<string, number | string | null>
@@ -74,15 +75,21 @@ export async function GET(req: Request) {
     const avgPerActiveHour = r.active_hours ? pairs / r.active_hours : 0
     const wms = Number(t.wms)
     const wmsPaired = Number(t.wms_paired)
-    const exceptions = suspects.filter(s => s.kind !== 'extra').length
-    const additional = suspects.length - exceptions
+    const bad = suspects.filter(s => s.kind !== 'extra')
+    const exceptions = bad.length + aisle.length
+    const additional = suspects.length - bad.length
+    // Who to have a word with: exceptions per person, so a pattern - one
+    // scanner catching boxes, one hanging labels down the wrong aisle - shows
+    // the same day rather than in a report at the end.
+    const flagged = new Map<string, number>()
+    for (const x of [...bad, ...aisle]) flagged.set(x.username ?? '?', (flagged.get(x.username ?? '?') ?? 0) + 1)
 
     return json({
       totals: { ...t, exceptions, additional },
       byZone,
       perHour,
       perDay,
-      byUser,
+      byUser: (byUser as Array<{ username: string }>).map(u => ({ ...u, flagged: flagged.get(u.username) ?? 0 })),
       rate: {
         lastHour: r.last_hour,
         last8h: r.last_8h,

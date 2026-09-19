@@ -417,6 +417,17 @@ export function reversedScan(oldBin: string, newBin: string): string | null {
 }
 
 /** Reasons a pair is refused. Checked client-side for speed and again on the server. */
+/**
+ * Nine or more bare digits is a product barcode, not a bin. The longest real
+ * old bin is eight digits (01090305); a UPC is twelve, an EAN thirteen, a case
+ * code fourteen. At site 7 forty of these went in as old bins in one morning -
+ * the scanner caught the box on the shelf instead of the label under it - and
+ * each one burned a new label and left the real old bin unpaired.
+ */
+export function looksLikeUpc(scan: string): boolean {
+  return /^\d{9,}$/.test(String(scan ?? '').trim())
+}
+
 export function validatePair(
   oldBin: string,
   newBin: string,
@@ -426,6 +437,8 @@ export function validatePair(
   if (oldBin === newBin) return 'Old and new are identical - same label scanned twice?'
   const backwards = reversedScan(oldBin, newBin)
   if (backwards) return backwards
+  if (looksLikeUpc(oldBin))
+    return `${oldBin} is a product barcode, not a bin label - the scanner caught a box. Scan the shelf's OLD bin label.`
   if (opts.enforceFormat && !NEW_PATTERN.test(newBin))
     return `Incorrect format on the new label: ${newBin}. Expected a code like A0101F01 - zone letter, two-digit aisle, two-digit column, shelf letter, then 01. Scan it again.`
   const loc = opts.location

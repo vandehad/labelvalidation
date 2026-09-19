@@ -1,7 +1,7 @@
-import { db, isUniqueViolation } from '@/lib/db'
+import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { json, fail } from '@/lib/api'
-import { validatePair, normalizeScan } from '@/lib/bins'
+import { recordPair } from '@/lib/pairing'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -24,7 +24,7 @@ export async function GET(req: Request) {
       // WMS progress: how many of the bins the WMS knows about are paired.
       // The label set is a superset, so "labels used" says little; this is
       // the number that matters. Zero wms means no list is loaded.
-      sql`WITH pc AS (SELECT DISTINCT canon_old(old_bin) AS c FROM pairs WHERE site_id = ${siteId})
+      sql`WITH pc AS (SELECT DISTINCT old_canon AS c FROM pairs WHERE site_id = ${siteId})
           SELECT
             (SELECT count(*)::int FROM pairs  WHERE site_id = ${siteId}) AS pairs,
             (SELECT count(*)::int FROM labels WHERE site_id = ${siteId}) AS labels,
@@ -57,6 +57,11 @@ export async function GET(req: Request) {
  * in application code: with several people scanning at once, a check-first
  * approach has a race between the check and the insert. A unique violation
  * comes back as 409 with the row that already owns the code.
+ *
+ * The rules themselves live in src/lib/pairing.ts, shared with /wm. A pair
+ * whose labels name different aisles, or whose old bin the WMS has never
+ * heard of, comes back 409 `needsConfirm`; the same pair sent again with
+ * `confirmed: true` is recorded with the reason kept on the row.
  */
 export async function POST(req: Request) {
   try {
@@ -66,49 +71,19 @@ export async function POST(req: Request) {
       oldBin?: string
       newBin?: string
       location?: string | null
+      confirmed?: boolean
     }
     const siteId = Number(body.siteId)
-    // normalizeScan, not just trim: labels here encode a padded field ahead
-    // of the code, so a scan arrives as `A     A0101B01`.
-    const oldBin = normalizeScan(body.oldBin ?? '')
-    const newBin = normalizeScan(body.newBin ?? '')
     if (!siteId) return json({ error: 'site is required' }, 400)
-
-    const why = validatePair(oldBin, newBin, { enforceFormat: true, location: null })
-    if (why) return json({ error: why }, 422)
-
-    const sql = db()
-    try {
-      const rows = (await sql`
-        INSERT INTO pairs (site_id, old_bin, new_bin, location, user_id)
-        VALUES (${siteId}, ${oldBin}, ${newBin}, ${body.location ?? null}, ${user.uid})
-        RETURNING id, old_bin, new_bin, location, created_at
-      `) as Array<Record<string, unknown>>
-      return json({ pair: { ...rows[0], username: user.name } }, 201)
-    } catch (e) {
-      if (isUniqueViolation(e)) {
-        const which = e.constraint === 'pairs_new_unique' ? 'new' : 'old'
-        const clash = (await (which === 'new'
-          ? sql`SELECT p.old_bin, p.new_bin, u.username
-                FROM pairs p LEFT JOIN users u ON u.id = p.user_id
-                WHERE p.site_id = ${siteId} AND p.new_bin = ${newBin} LIMIT 1`
-          : sql`SELECT p.old_bin, p.new_bin, u.username
-                FROM pairs p LEFT JOIN users u ON u.id = p.user_id
-                WHERE p.site_id = ${siteId} AND p.old_bin = ${oldBin} LIMIT 1`)) as Array<{
-          old_bin: string
-          new_bin: string
-          username: string | null
-        }>
-        const c = clash[0]
-        const msg = c
-          ? which === 'new'
-            ? `${newBin} is already used by ${c.old_bin}${c.username ? ` (scanned by ${c.username})` : ''}.`
-            : `${oldBin} is already paired to ${c.new_bin}${c.username ? ` (scanned by ${c.username})` : ''}.`
-          : `That ${which} bin is already recorded.`
-        return json({ error: msg, conflict: which }, 409)
-      }
-      throw e
+    const r = await recordPair(db(), siteId, user, body.oldBin ?? '', body.newBin ?? '', {
+      location: body.location ?? null,
+      confirmed: body.confirmed === true,
+    })
+    if (!r.ok) {
+      const { ok: _ok, status, ...rest } = r
+      return json(rest, status)
     }
+    return json({ pair: { ...r.pair, username: user.name }, warned: r.warned }, 201)
   } catch (e) {
     return fail(e)
   }
