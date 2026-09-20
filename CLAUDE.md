@@ -118,8 +118,12 @@ npm run user -- <name> <password> [scanner|admin]
   `batch2` for a run sent to a relay's second batch printer. A relay sends
   each to the printer it names and falls back to its first when that one is
   not set - never leave a job waiting on a printer nobody configured.
-  `claimNext` hands reprints out ahead of batches. "Both printers" is the
-  Print card alternating kinds batch by batch, not a kind of its own. The one LAN listener is the
+  `claimNext` hands reprints out ahead of batches. The relay runs a loop
+  per printer and each claims only its own kinds, so the printers run at the
+  same time; each printer's held run is released and cancelled on its own.
+  **A run goes to one printer, whole.** Alternating a run's batches between
+  the two was built and removed the same day - it puts half an aisle on each
+  stack. Two printers are used by sending a zone to each. The one LAN listener is the
   **Windows Mobile gateway** (`wmGateway`, opt-in by port): it forwards `/wm`
   and nothing else, because an MC92N0 cannot do TLS 1.2 and cannot reach the
   app any other way. It must never accept ZPL or expose the setup page.

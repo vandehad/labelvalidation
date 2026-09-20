@@ -107,6 +107,18 @@ let batch2 = {
 const targetFor = kind =>
   kind === 'reprint' && reprint.mode ? reprint : kind === 'batch2' && batch2.mode ? batch2 : target
 
+/**
+ * A loop per printer, so the two batch printers run at the same time and a
+ * reprint never waits behind a batch. Each asks the app only for the kinds of
+ * job its own printer prints. The first printer's loop also takes the kinds
+ * whose printer is not set - which is the same fallback `targetFor` makes.
+ */
+const WORKERS = ['first', 'batch2', 'reprint']
+const kindsFor = w =>
+  w === 'first'
+    ? ['batch', ...(batch2.mode ? [] : ['batch2']), ...(reprint.mode ? [] : ['reprint'])]
+    : w === 'batch2' ? (batch2.mode ? ['batch2'] : []) : reprint.mode ? ['reprint'] : []
+
 const LISTEN = Number(arg('listen', saved.listen || '9110'))
 const ALLOW = (arg('allow') || saved.allow || 'https://labelvalidation.vercel.app,http://localhost:3000')
   .split(',')
@@ -251,11 +263,13 @@ async function sendJob(job) {
   return { stopped: false, sent }
 }
 
-/** One poll: take the next job for this site, print it, report back. */
-async function pollOnce() {
+/** One poll: take the next job of these kinds for this site, print it, report back. */
+async function pollOnce(kinds) {
+  // An app older than this relay ignores `kinds` and may hand any loop any
+  // job. That is harmless: the job still goes to the printer its kind names.
   const q =
     '?relay=' + encodeURIComponent(link.name) + '&site=' + link.site +
-    '&target=' + encodeURIComponent(describeAll()) + '&v=' + VERSION
+    '&target=' + encodeURIComponent(describeAll()) + '&v=' + VERSION + '&kinds=' + kinds.join(',')
   const r = await appFetch('/api/print/next' + q)
   if (r.status === 204) return false
   const job = await r.json().catch(() => ({}))
@@ -293,16 +307,26 @@ async function pollOnce() {
   return true
 }
 
-let pollTimer = null
-async function pollLoop() {
-  clearTimeout(pollTimer)
+const loops = Object.fromEntries(WORKERS.map(w => [w, { timer: null, busy: false }]))
+/** Start, or nudge, every printer's loop. Safe to call at any time. */
+const pollLoop = () => WORKERS.forEach(w => void workerLoop(w))
+async function workerLoop(w) {
+  const me = loops[w]
+  // Mid-job already: it reschedules itself when the job is done. A second
+  // chain here would be two loops feeding one printer.
+  if (me.busy) return
+  clearTimeout(me.timer)
+  me.busy = true
   let delay = 5000
+  const kinds = kindsFor(w)
   if (!target.mode || !link.key || !link.site) {
     queue.state = 'off'
     queue.detail = !target.mode ? 'no printer chosen' : !link.key ? 'not connected to the app' : 'no site chosen'
+  } else if (!kinds.length) {
+    // This loop's printer is not set. Look again shortly in case it is.
   } else {
     try {
-      const had = await pollOnce()
+      const had = await pollOnce(kinds)
       if (queue.state !== 'ok')
         console.log(`  queue: connected to ${link.app} as "${link.name}" for ${link.siteName || 'site ' + link.site}`)
       queue.state = 'ok'
@@ -320,7 +344,8 @@ async function pollLoop() {
       delay = 10000
     }
   }
-  pollTimer = setTimeout(pollLoop, delay)
+  me.busy = false
+  me.timer = setTimeout(() => void workerLoop(w), delay)
 }
 
 const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')

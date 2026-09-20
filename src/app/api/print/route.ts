@@ -60,16 +60,18 @@ export async function POST(req: Request) {
 export async function PATCH(req: Request) {
   try {
     await requireUser()
-    const body = (await req.json()) as { siteId?: number; action?: string }
+    const body = (await req.json()) as { siteId?: number; action?: string; kind?: string }
     const siteId = Number(body.siteId)
     if (!siteId) return json({ error: 'site is required' }, 400)
     const sql = db()
+    // Which printer's held run. Left out, it is every printer's - the oldest held of any.
+    const kind = body.kind === undefined || body.kind === null ? null : jobKind(body.kind)
     if (body.action === 'release-next') {
-      const id = await releaseNext(sql, siteId)
+      const id = await releaseNext(sql, siteId, kind)
       if (id === null) return json({ error: 'Nothing is held.' }, 409)
       return json({ ok: true, released: id })
     }
-    if (body.action === 'cancel-held') return json({ ok: true, cancelled: await cancelHeld(sql, siteId) })
+    if (body.action === 'cancel-held') return json({ ok: true, cancelled: await cancelHeld(sql, siteId, kind) })
     return json({ error: 'action must be release-next or cancel-held' }, 400)
   } catch (e) {
     return fail(e)

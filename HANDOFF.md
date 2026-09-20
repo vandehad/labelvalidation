@@ -249,13 +249,19 @@ pacing on, each check refreshes `claimed_at`, so a paced batch outlasting
 `print_jobs.kind` is `batch | batch2 | reprint` (`jobKind` in
 `src/lib/printq.ts` is the one place that decides), and the relay's
 `targetFor(kind)` picks the printer, falling back to the first when the named
-one is unset. The relay is still one loop taking one job at a time; that is
-enough because an unpaced batch is in the printer's memory in a second or
-two, so two printers run side by side out of their own buffers. If pacing
-(`--lps`) is switched on, that stops being true - a paced batch holds the loop
-for minutes and the second printer waits behind it. A loop per printer is the
-fix if anyone needs pacing and two printers together. Proven with fake
-printers (`basis_files/e2e-batch2.mjs`), not yet on two real ones.
+one is unset. The relay runs **a loop per printer** (`WORKERS`, `kindsFor`):
+each polls `/api/print/next?kinds=...` for the kinds its own printer prints,
+and `claimNext` filters on them, so the printers run at the same time and a
+reprint never waits behind a batch - paced or not. The first printer's loop
+also asks for any kind whose printer is unset. A relay older than this names
+no kinds and is handed everything, as before. **Each printer's held run is its
+own queue**: `release-next` and `cancel-held` take a `kind`, and the Print card
+shows a line per printer. The first cut also had "both printers, batches
+alternating"; it was removed within the hour on the floor's word - nobody
+wants half an aisle on each stack, and two runs sharing one Release button is
+one printer waiting on the other. Send a zone to each instead. Proven with
+fake printers and a throwaway site (`basis_files/e2e-batch2.mjs`,
+`e2e-queues.mjs`), not yet on two real printers.
 
 **The MC92N0 reaches the app through the relay, over plain http.** Windows
 Mobile 6.5 IE tops out at TLS 1.0; Vercel requires 1.2. The device could not

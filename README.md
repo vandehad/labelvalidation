@@ -176,13 +176,15 @@ two things to fill in:
    floor printer on purpose; a scanner's Print card only ever reprints.
 
 4. **Second batch printer, optional.** One relay can drive two batch printers
-   and the reprint printer at once. With a second one set, *Printer at the
-   relay* on the Print card offers **Second batch printer** and **Both batch
-   printers - batches alternate**: the first 500 go to one, the next 500 to the
-   other, so a long run takes half the time and each printer's stack is whole
-   batches in order. A held run alternates the same way - press *Release next
-   batch* twice to start both. A relay with no second printer prints those
-   jobs on its first, so nothing queued for "printer 2" ever sits waiting.
+   and the reprint printer at the same time. Each printer is its own queue:
+   pick a zone on the Print card, choose **Batch printer** under *Printer at
+   the relay* and send it; pick another zone, choose **Second batch printer**
+   and send that. The two runs print side by side, and each has its own
+   *Release next batch* and *Cancel all held*, so a printer that finishes its
+   batch early is not kept waiting by the other one's. A run is never split
+   between the two - nobody wants half an aisle on each stack. A relay with no
+   second printer prints those jobs on its first, so nothing queued for
+   "printer 2" ever sits waiting.
 
 A relay serves **one site**. Two sites queuing at once each get their own
 labels on their own printer; a second site needs its own relay (any PC, same

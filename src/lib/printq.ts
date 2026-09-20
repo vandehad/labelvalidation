@@ -44,6 +44,19 @@ export type JobStatus = 'held' | 'queued' | 'printing' | 'done' | 'failed' | 'ca
  */
 export type JobKind = 'batch' | 'batch2' | 'reprint'
 
+/**
+ * The kinds a relay's loop asks for: `batch,batch2`. Null - nothing usable
+ * given - means any kind, which is what a relay older than per-printer loops
+ * sends, and it must keep getting every job.
+ */
+export function parseKinds(raw: string | null | undefined): JobKind[] | null {
+  const kinds = String(raw ?? '')
+    .split(',')
+    .map(k => k.trim())
+    .filter((k): k is JobKind => k === 'batch' || k === 'batch2' || k === 'reprint')
+  return kinds.length ? [...new Set(kinds)] : null
+}
+
 /** Anything not recognised is a plain batch. */
 export const jobKind = (raw: unknown): JobKind => (raw === 'reprint' || raw === 'batch2' ? raw : 'batch')
 
@@ -270,9 +283,11 @@ export type Claimed = { id: number; codes: string[]; copies: number; zpl: string
 /**
  * Hand the next job for this site to the relay that asked. One statement
  * does the claim - `FOR UPDATE SKIP LOCKED` - so two relays on one site
- * never print the same job.
+ * never print the same job - and nor do two loops of one relay, which is
+ * how its printers run side by side. `kinds` limits the claim to the jobs
+ * the asking loop's printer prints; null is any.
  */
-export async function claimNext(sql: Sql, siteId: number, name: string): Promise<Claimed | null> {
+export async function claimNext(sql: Sql, siteId: number, name: string, kinds: JobKind[] | null = null): Promise<Claimed | null> {
   await sql`
     UPDATE print_jobs SET status = 'queued', claimed_at = NULL, claimed_by = NULL
     WHERE status = 'printing' AND claimed_at < now() - make_interval(mins => ${STALE_MINUTES})`
@@ -281,6 +296,7 @@ export async function claimNext(sql: Sql, siteId: number, name: string): Promise
     WHERE id = (
       SELECT id FROM print_jobs
       WHERE site_id = ${siteId} AND status = 'queued' AND (relay IS NULL OR relay = ${name})
+        AND (${kinds}::text[] IS NULL OR kind = ANY(${kinds}::text[]))
       -- a reprint is one label somebody is standing waiting for; it goes
       -- ahead of whatever is left of a batch
       ORDER BY (kind = 'reprint') DESC, id
@@ -378,18 +394,29 @@ export async function releaseJob(sql: Sql, id: number): Promise<boolean> {
   return rows.length > 0
 }
 
-/** Release the oldest held job for a site - "next batch". Returns its id, or null when none is held. */
-export async function releaseNext(sql: Sql, siteId: number): Promise<number | null> {
+/**
+ * Release the oldest held job - "next batch". Each printer's held run is its
+ * own queue: a zone sent to the first batch printer and another sent to the
+ * second are released, and cancelled, without touching each other, so one
+ * printer finishing early is never held up by the other's batch waiting to be
+ * looked at. `kind` names the printer; null is the oldest held of any.
+ * Returns its id, or null when none is held.
+ */
+export async function releaseNext(sql: Sql, siteId: number, kind: JobKind | null = null): Promise<number | null> {
   const rows = (await sql`
     UPDATE print_jobs SET status = 'queued'
-    WHERE id = (SELECT id FROM print_jobs WHERE site_id = ${siteId} AND status = 'held' ORDER BY id LIMIT 1)
+    WHERE id = (SELECT id FROM print_jobs
+                WHERE site_id = ${siteId} AND status = 'held' AND (${kind}::text IS NULL OR kind = ${kind})
+                ORDER BY id LIMIT 1)
     RETURNING id`) as Array<{ id: number }>
   return rows[0]?.id ?? null
 }
 
-/** Drop every held job for a site. Nothing here has reached a relay. */
-export async function cancelHeld(sql: Sql, siteId: number): Promise<number> {
-  const rows = await sql`DELETE FROM print_jobs WHERE site_id = ${siteId} AND status = 'held' RETURNING id`
+/** Drop every held job for a site, or for one printer's run. Nothing here has reached a relay. */
+export async function cancelHeld(sql: Sql, siteId: number, kind: JobKind | null = null): Promise<number> {
+  const rows = await sql`
+    DELETE FROM print_jobs
+    WHERE site_id = ${siteId} AND status = 'held' AND (${kind}::text IS NULL OR kind = ${kind}) RETURNING id`
   return rows.length
 }
 
