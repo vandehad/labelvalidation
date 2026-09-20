@@ -246,8 +246,23 @@ forwards `/wm` to the app over https, rewriting `Location` (the app builds
 absolute redirects from the request URL it saw) and stripping `Secure` from
 `Set-Cookie` (a browser will not return a Secure cookie over http). It
 forwards nothing else and accepts no ZPL, which is the only reason a LAN
-listener is tolerable here. It is untested on a real MC92N0 as of 10 Sep
-2026: proven against the local app with a fake client only.
+listener is tolerable here.
+
+**Still not proven on a real MC92N0, as of 20 Sep 2026.** The first field
+report was "The page cannot be displayed" on the handheld while a phone on the
+same network opened the same address. That rules out the firewall and the
+gateway being down, and leaves two families of cause that could not be told
+apart from a desk, because the gateway logged nothing per request. Three
+plausible response-side causes were removed - Node was answering with chunked
+transfer on a kept-alive socket, which IE6-era stacks mishandle; redirects were
+303; cookies carried SameSite - and the gateway now records every request
+(address, user-agent, status) in its window and console, with a static `/ping`
+page that needs no upstream. If the handheld's address never shows up there,
+the fault is on the device: Windows Mobile's Connection Manager sends dotted
+addresses down "The Internet", and a NIC marked "Work" never emits a packet.
+All of this is verified at the wire level with a raw socket
+(`basis_files/e2e-gateway-raw.mjs`), not on hardware. Whoever next has the
+device in hand: run /ping first and read the hit list before touching code.
 
 **Guards at scan time came out of site 7's data, not out of caution.** In
 three days: 40 UPCs scanned as old bins by one person in one morning (each

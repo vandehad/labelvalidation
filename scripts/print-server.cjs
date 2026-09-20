@@ -140,10 +140,14 @@ const persist = () => saveConfig({ ...target, reprint, ...link, listen: LISTEN, 
 
 /** This PC's LAN addresses, for the address to type into a handheld. */
 function lanAddresses() {
-  const out = []
-  for (const list of Object.values(os.networkInterfaces()))
-    for (const a of list || []) if (a.family === 'IPv4' && !a.internal) out.push(a.address)
-  return out
+  // Virtual adapters (Hyper-V, WSL, VirtualBox, VMware) have addresses nothing
+  // on the warehouse network can reach, and one of them is often listed first.
+  const virtual = /vethernet|wsl|virtualbox|vmware|hyper-v|loopback|bluetooth|docker/i
+  const real = []
+  const other = []
+  for (const [name, list] of Object.entries(os.networkInterfaces()))
+    for (const a of list || []) if (a.family === 'IPv4' && !a.internal) (virtual.test(name) ? other : real).push(a.address)
+  return [...real, ...other]
 }
 
 const queue = { state: 'off', detail: '', lastPoll: 0, lastWork: 0, printed: 0, lastJob: null }
@@ -526,6 +530,15 @@ const PAGE = printers => `<!doctype html>
      or the handhelds cannot reach it. The address is this PC's, so give it a fixed IP.</p>
   <button id="wmsave">Save</button>
   <div class="msg" id="wmmsg"></div>
+  <h2 style="margin-top:18px">If a handheld says "The page cannot be displayed"</h2>
+  <p><b>1.</b> On the handheld, open <span class="now" id="wmping">${WM_PORT ? `http://${esc(lanAddresses()[0] || '<this PC>')}:${WM_PORT}/ping` : 'the /ping address (turn the gateway on first)'}</span>
+     - type the <b>http://</b>, it will not guess it with a port number. That page needs nothing but this PC.</p>
+  <p><b>2.</b> Watch the list below while you do. If the handheld's address <b>appears</b>, the network is fine.
+     If <b>nothing appears</b>, the request never left the handheld: on it, go to Start &rarr; Settings &rarr; Connections &rarr;
+     Wi-Fi (or Network Cards) and set <b>"My network card connects to"</b> to <b>The Internet</b>, not Work. Windows Mobile
+     sends any address with dots in it down the Internet connection, and a card marked Work has none.</p>
+  <label>Requests the gateway has seen</label>
+  <div id="wmhits" style="font:12px ui-monospace,Consolas,monospace;background:#eef2f6;border-radius:6px;padding:8px 10px;min-height:38px;white-space:pre-wrap">none yet</div>
 </div>
 <div class="card">
   <h2>Stop</h2>
@@ -613,6 +626,11 @@ const PAGE = printers => `<!doctype html>
      if (q.lastJob) t += ' · last job #' + q.lastJob.id + (q.lastJob.ok ? ' printed' : ' FAILED: ' + q.lastJob.error)
      $('qstat').textContent = t
      $('qstat').style.color = q.state === 'ok' ? 'var(--ok)' : q.state === 'error' ? 'var(--bad)' : 'var(--muted)'
+     const g = s.gateway || { hits: [] }
+     $('wmhits').textContent = g.hits.length
+       ? g.hits.map(h => ago(h.at).padEnd(9) + h.ip.padEnd(16) + (h.method + ' ' + h.url).padEnd(22) + String(h.status).padEnd(5) + (h.note ? h.note + '  ' : '') + h.ua).join('
+')
+       : (g.port ? 'none yet - nothing has reached this PC on port ' + g.port : 'gateway is off')
    } catch (e) {}
  }
  refreshStatus(); setInterval(refreshStatus, 3000)
@@ -652,12 +670,47 @@ const TEST_ZPL = [
  * no ZPL and exposes no setup page - it is the handheld route and nothing
  * more, which is why it is allowed to listen on the LAN at all.
  */
+/** The last requests the gateway saw, newest first - shown in the relay window. */
+const gatewayHits = []
+function noteHit(req, status, note) {
+  const ip = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '')
+  const hit = { at: Date.now(), ip, method: req.method, url: (req.url || '').slice(0, 60), status, ua: String(req.headers['user-agent'] || '').slice(0, 90), note: note || '' }
+  gatewayHits.unshift(hit)
+  gatewayHits.length = Math.min(gatewayHits.length, 25)
+  console.log(`  gateway  ${ip}  ${req.method} ${hit.url} -> ${status}${note ? '  ' + note : ''}  [${hit.ua.slice(0, 50)}]`)
+}
+
+/**
+ * Answer the way an IE6-era browser expects: an explicit Content-Length and
+ * Connection: close. Left to itself Node answers HTTP/1.1 with chunked
+ * transfer on a kept-alive socket, which a phone handles and Pocket IE on
+ * Windows Mobile 6.5 may turn into "The page cannot be displayed".
+ */
+function plainSend(req, res, status, headers, body, note) {
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ''), 'utf8')
+  res.shouldKeepAlive = false
+  res.writeHead(status, { ...headers, 'Content-Length': buf.length, Connection: 'close' })
+  res.end(buf)
+  noteHit(req, status, note)
+}
+
 async function wmGateway(req, res) {
   const url = req.url || '/'
-  if (!(url === '/wm' || url.startsWith('/wm?') || url.startsWith('/wm/'))) {
-    res.writeHead(302, { Location: '/wm' })
-    return void res.end()
+
+  // A page that needs nothing but this PC. If the handheld can show this, the
+  // network path is good and anything wrong is further in; if it cannot, the
+  // request never got here and the device's own settings are the place to look.
+  if (url === '/ping' || url.startsWith('/ping?')) {
+    return plainSend(req, res, 200, { 'Content-Type': 'text/html' },
+      '<html><head><title>Gateway OK</title></head><body>' +
+      '<font face="Tahoma" size="5"><b>GATEWAY OK</b></font><br><br>' +
+      '<font face="Tahoma" size="4">This handheld can reach the relay PC.<br><br>' +
+      '<a href="/wm">Go to the scanning page</a></font></body></html>', 'ping')
   }
+
+  if (!(url === '/wm' || url.startsWith('/wm?') || url.startsWith('/wm/')))
+    return plainSend(req, res, 302, { Location: '/wm', 'Content-Type': 'text/html' }, '<html><body><a href="/wm">continue</a></body></html>')
+
   const origin = link.app.replace(/\/$/, '')
   const body = req.method === 'POST' ? await readBody(req, 1024 * 1024) : undefined
   const headers = {}
@@ -666,19 +719,26 @@ async function wmGateway(req, res) {
   try {
     r = await fetch(origin + url, { method: req.method, headers, body, redirect: 'manual' })
   } catch (e) {
-    res.writeHead(502, { 'Content-Type': 'text/html; charset=utf-8' })
-    return void res.end('<html><body style="font-family:Tahoma;font-size:20px"><b>Cannot reach the app</b><br>' + esc(e.message) + '<br><a href="/wm">try again</a></body></html>')
+    return plainSend(req, res, 502, { 'Content-Type': 'text/html' },
+      '<html><body><font face="Tahoma" size="4"><b>Cannot reach the app</b><br>' + esc(e.message) + '<br><a href="/wm">try again</a></font></body></html>', 'UPSTREAM FAILED')
   }
-  const out = { 'Cache-Control': 'no-store' }
+  const out = { 'Cache-Control': 'no-cache', Pragma: 'no-cache' }
   const ct = r.headers.get('content-type')
   if (ct) out['Content-Type'] = ct
   const loc = r.headers.get('location')
-  if (loc) out['Location'] = loc.replace(origin, 'http://' + (req.headers.host || 'localhost'))
+  const host = 'http://' + (req.headers.host || 'localhost')
+  if (loc) out['Location'] = loc.startsWith('/') ? host + loc : loc.replace(origin, host)
   const cookies = typeof r.headers.getSetCookie === 'function' ? r.headers.getSetCookie() : []
-  if (cookies.length) out['Set-Cookie'] = cookies.map(c => c.replace(/;\s*Secure/gi, ''))
-  const buf = Buffer.from(await r.arrayBuffer())
-  res.writeHead(r.status, out)
-  res.end(buf)
+  // Secure would stop the cookie coming back over http; SameSite is an
+  // attribute old parsers have been known to trip on, and means nothing here.
+  if (cookies.length) out['Set-Cookie'] = cookies.map(c => c.replace(/;\s*Secure/gi, '').replace(/;\s*SameSite=\w+/gi, ''))
+  let buf = Buffer.from(await r.arrayBuffer())
+  // 303 and 307 are HTTP/1.1; an old browser is only sure of 302, and treats
+  // it the same way - a GET of the new address.
+  let status = r.status
+  if (status === 303 || status === 307 || status === 308) status = 302
+  if (status === 302 && !buf.length) buf = Buffer.from('<html><body><a href="' + esc(out['Location'] || '/wm') + '">continue</a></body></html>')
+  plainSend(req, res, status, out, buf)
 }
 
 let gateway = null
@@ -704,7 +764,10 @@ function startGateway() {
   // The LAN, on purpose - this is the one listener that has to be reachable
   // from the floor, and it forwards /wm and nothing else.
   gateway.listen(WM_PORT, '0.0.0.0', () => {
-    console.log(`  handhelds   http://${lanAddresses()[0] || '<this PC>'}:${WM_PORT}/wm  (Windows Mobile gateway)`)
+    const ips = lanAddresses()
+    console.log(`  handhelds   http://${ips[0] || '<this PC>'}:${WM_PORT}/wm  (Windows Mobile gateway)`)
+    console.log(`              test page: http://${ips[0] || '<this PC>'}:${WM_PORT}/ping`)
+    if (ips.length > 1) console.log('              this PC also answers on: ' + ips.slice(1).join(', '))
   })
 }
 
@@ -766,6 +829,7 @@ const server = http.createServer(async (req, res) => {
           siteName: link.siteName,
           connected: Boolean(link.key && link.site),
         },
+        gateway: { port: WM_PORT, addresses: lanAddresses(), hits: gatewayHits.slice(0, 12) },
       })
     }
 

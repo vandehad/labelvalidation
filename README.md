@@ -399,6 +399,32 @@ one listener is allowed on the LAN. Windows Firewall will ask once; give the
 PC a fixed address so the handhelds keep finding it. Traffic between the
 handheld and the relay PC is unencrypted, as it has to be for that browser.
 
+**If the handheld says "The page cannot be displayed"** while a phone on the
+same Wi-Fi opens the address fine, work out which side the fault is on before
+changing anything:
+
+1. On the handheld open `http://<relay PC>:8080/ping`. Type the `http://` -
+   with a port number in the address it will not guess it. That page is served
+   by the relay alone and needs nothing from the internet.
+2. Watch *Requests the gateway has seen* in the relay window while you do.
+   Every request is listed with the address it came from and the browser that
+   sent it.
+   - **The handheld's address appears:** the network is fine and the request
+     arrived. Tell whoever maintains this what status it shows.
+   - **Nothing appears:** the request never left the handheld. On Windows
+     Mobile that is nearly always Connection Manager: Start -> Settings ->
+     Connections -> Wi-Fi (or Network Cards) -> *My network card connects to*
+     must be **The Internet**, not *Work*. Windows Mobile sends any address
+     with dots in it - which every IP address has - down the Internet
+     connection, and a card marked Work has none, so the browser gives up
+     without sending a packet. A proxy set under Connections -> Advanced does
+     the same thing.
+
+The gateway answers the way a browser of that age expects: an explicit
+`Content-Length` and `Connection: close` rather than chunked transfer on a
+kept-alive socket, `302` where the app says `303`, and cookies with `Secure`
+and `SameSite` stripped.
+
 What the device needs: Windows Mobile 6.5 (or CE 7) with Internet Explorer
 Mobile, Wi-Fi on the same network as the relay PC, and DataWedge or the
 built-in scanner set to send the scan as keystrokes followed by Enter. The

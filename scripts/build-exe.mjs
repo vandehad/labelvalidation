@@ -14,14 +14,20 @@
  * app. Only whoever cuts a release runs this.
  */
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, writeFileSync, copyFileSync, existsSync, statSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, copyFileSync, existsSync, statSync, rmSync, renameSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
 const out = join(root, 'dist')
 const entry = join(root, 'scripts', 'print-server.cjs')
 const blob = join(out, 'print-server.blob')
-const exe = join(out, 'print-server.exe')
+// Built beside the real one and swapped in at the end. The first version
+// deleted dist/print-server.exe before building, which was wrong twice over:
+// any failure after that left no relay at all, and when the relay is running
+// - which on the PC that builds it, it usually is - Windows holds the file
+// and the delete throws before a byte is built.
+const final = join(out, 'print-server.exe')
+const exe = join(out, 'print-server.new.exe')
 const cfg = join(out, 'sea-config.json')
 
 // No shell: node lives under "C:\Program Files\nodejs" and a shell splits
@@ -38,7 +44,7 @@ if (process.platform !== 'win32') {
 }
 
 mkdirSync(out, { recursive: true })
-if (existsSync(exe)) rmSync(exe)
+if (existsSync(exe)) rmSync(exe) // a leftover from an earlier build; never the running relay
 
 console.log('1/4  writing the sea config')
 writeFileSync(
@@ -102,8 +108,24 @@ if (!grew) {
 }
 
 const mb = (statSync(exe).size / 1024 / 1024).toFixed(0)
+
+// Swap it in. If the relay is running from the old file Windows will not let
+// go of it; that is not a failed build, so say exactly where the new one is
+// rather than leaving someone to copy the old exe believing it is current.
+let where = final
+try {
+  if (existsSync(final)) rmSync(final)
+  renameSync(exe, final)
+} catch (e) {
+  if (e.code !== 'EPERM' && e.code !== 'EBUSY' && e.code !== 'EACCES') throw e
+  where = exe
+  console.log('')
+  console.log('  NOTE: dist\\print-server.exe is in use - the relay is running from it - so it was')
+  console.log('        left alone. The NEW build is print-server.new.exe. Use that file: copy it')
+  console.log('        to the relay PC, or stop the relay here (Stop in its window) and build again.')
+}
 console.log('')
-console.log(`  built  ${exe}  (${mb} MB)`)
+console.log(`  built  ${where}  (${mb} MB)`)
 console.log('')
 console.log('  It carries the whole Node runtime, which is where the size goes.')
 console.log('  Copy it to the PC with the printer and double-click it - the setup')
