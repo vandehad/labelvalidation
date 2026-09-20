@@ -1199,7 +1199,7 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
       const total = (selected.length * spec.copies).toLocaleString()
       setMsg(
         holding
-          ? { kind: 'ok', text: `${total} label(s) prepared in ${n} batches, all held. Release them one at a time below - nothing goes to the printer until you do.` }
+          ? { kind: 'warn', text: `NOTHING HAS PRINTED YET. ${total} label(s) are prepared in ${n} held batches. Press "Release next batch" below to print the first ${Math.min(500, selected.length)} - nothing goes to the printer until you do.` }
           : online.length
             ? { kind: 'ok', text: `Queued ${total} label(s). Printing at ${online.join(', ')} — progress below.` }
             : {
@@ -1421,7 +1421,13 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
 
       <div className="btns" style={{ marginTop: 12 }}>
         <button className="act" onClick={print} disabled={busy || !selected.length}>
-          {busy ? 'Sending…' : `Print ${selected.length.toLocaleString()} label(s)`}
+          {busy
+            ? 'Sending…'
+            : route !== 'direct' && hold && batches > 1
+              ? // Says what it does: a held run prints nothing until released, and a
+                // button reading "Print 2,000" that then prints nothing reads as broken.
+                `Prepare ${selected.length.toLocaleString()} labels in ${batches} held batches`
+              : `Print ${selected.length.toLocaleString()} label(s)`}
         </button>
         <button className="act ghost" onClick={download} disabled={!selected.length}>
           Download .zpl
