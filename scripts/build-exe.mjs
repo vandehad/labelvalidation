@@ -14,7 +14,7 @@
  * app. Only whoever cuts a release runs this.
  */
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, writeFileSync, copyFileSync, existsSync, statSync, rmSync, renameSync } from 'node:fs'
+import { mkdirSync, writeFileSync, copyFileSync, existsSync, statSync, rmSync, renameSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
@@ -26,8 +26,13 @@ const blob = join(out, 'print-server.blob')
 // any failure after that left no relay at all, and when the relay is running
 // - which on the PC that builds it, it usually is - Windows holds the file
 // and the delete throws before a byte is built.
+// Either name may be the one the relay is running from right now - after a
+// build that could not replace print-server.exe, the natural thing is to start
+// print-server.new.exe, and then that is the locked one. So the build goes to
+// a name of its own and is moved onto whichever of the two is free.
 const final = join(out, 'print-server.exe')
-const exe = join(out, 'print-server.new.exe')
+const spare = join(out, 'print-server.new.exe')
+const exe = join(out, `print-server.build-${Date.now()}.exe`)
 const cfg = join(out, 'sea-config.json')
 
 // No shell: node lives under "C:\Program Files\nodejs" and a shell splits
@@ -44,7 +49,8 @@ if (process.platform !== 'win32') {
 }
 
 mkdirSync(out, { recursive: true })
-if (existsSync(exe)) rmSync(exe) // a leftover from an earlier build; never the running relay
+// Leftovers of earlier builds. One that is locked is a relay someone is running; leave it.
+for (const f of readdirSync(out)) if (/^print-server\.build-\d+\.exe$/.test(f)) try { rmSync(join(out, f)) } catch {}
 
 // The setup page's script lives inside a template string in the relay, so an
 // escape written once is interpreted twice: a backslash-n in it reaches the
@@ -146,17 +152,23 @@ const mb = (statSync(exe).size / 1024 / 1024).toFixed(0)
 // Swap it in. If the relay is running from the old file Windows will not let
 // go of it; that is not a failed build, so say exactly where the new one is
 // rather than leaving someone to copy the old exe believing it is current.
-let where = final
-try {
-  if (existsSync(final)) rmSync(final)
-  renameSync(exe, final)
-} catch (e) {
-  if (e.code !== 'EPERM' && e.code !== 'EBUSY' && e.code !== 'EACCES') throw e
-  where = exe
+let where = exe
+const locked = e => e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EACCES'
+for (const name of [final, spare]) {
+  try {
+    if (existsSync(name)) rmSync(name)
+    renameSync(exe, name)
+    where = name
+    break
+  } catch (e) {
+    if (!locked(e)) throw e
+    console.log(`  NOTE: ${name.slice(out.length + 1)} is in use - a relay is running from it - so it was left alone.`)
+  }
+}
+if (where !== final) {
   console.log('')
-  console.log('  NOTE: dist\\print-server.exe is in use - the relay is running from it - so it was')
-  console.log('        left alone. The NEW build is print-server.new.exe. Use that file: copy it')
-  console.log('        to the relay PC, or stop the relay here (Stop in its window) and build again.')
+  console.log(`  The NEW build is ${where.slice(out.length + 1)}. Use that file: stop the relay (Stop in its`)
+  console.log('  window) and start this one, or copy it to the relay PC. The saved setup carries over.')
 }
 console.log('')
 console.log(`  built  ${where}  (${mb} MB)`)

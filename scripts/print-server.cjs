@@ -133,7 +133,8 @@ const describeAll = () =>
 
 /* ---------------- the web app's print queue ---------------- */
 
-const VERSION = '3'
+// 4: a loop per printer, and a second batch printer.
+const VERSION = '4'
 
 /**
  * Labels per piece. A job goes to the printer in pieces this size, and the

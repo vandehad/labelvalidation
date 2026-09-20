@@ -962,6 +962,10 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
   // batch in the printer's buffer cannot be pulled back, so the place to stop
   // a run that has gone wrong is before the next batch leaves the app.
   const [hold, setHold] = useState(true)
+  // Off, a batch run leaves out whatever is already printed or waiting in
+  // another job, after saying so. The zone buttons toggle, and "B, then C"
+  // with B still lit is B twice.
+  const [repeat, setRepeat] = useState(false)
   // Which of the relay's two printers: the batch printer for runs, or the
   // reprint printer out on the floor. A scanner's card only ever reprints.
   // A run goes to one printer, whole. Splitting a run across the two batch
@@ -1190,14 +1194,34 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
       // The queue. The ZPL is rendered here, with this card's stock and nudge,
       // so what the relay prints is exactly what the preview describes.
       const pinned = route.startsWith('relay:') ? route.slice(6) : null
+      let sending = selected
+      if (dest !== 'reprint' && !repeat) {
+        const before = await api('/api/print', { method: 'POST', body: JSON.stringify({ siteId, codes: selected, check: true }) })
+        if (before.codes.length) {
+          const skip = new Set<string>(before.codes)
+          const fresh = selected.filter(c => !skip.has(c))
+          if (!fresh.length) {
+            setMsg({ kind: 'bad', text: `${before.message} There is nothing new in this selection, so nothing was sent. To print them again on purpose, tick "Print labels that were already sent".` })
+            return
+          }
+          const go = confirm(
+            `${before.message}\n\nOK - leave those out and send only the ${fresh.length.toLocaleString()} that have not been sent (${fresh[0]} to ${fresh[fresh.length - 1]}).\nCancel - send nothing.`,
+          )
+          if (!go) {
+            setMsg({ kind: 'warn', text: 'Nothing was sent. Check which zones are lit - the zone buttons toggle, so an earlier zone stays selected until it is pressed again.' })
+            return
+          }
+          sending = fresh
+        }
+      }
       // One batch goes straight out. A run of several is held, so the first
       // batch can be looked at before the second leaves the app.
-      const holding = hold && selected.length > CHUNK
+      const holding = hold && sending.length > CHUNK
       let n = 0
       let online: string[] = []
-      for (let i = 0; i < selected.length; i += CHUNK) {
-        const slice = selected.slice(i, i + CHUNK)
-        setMsg({ kind: 'warn', text: `${holding ? 'Preparing' : 'Queuing'} ${Math.min(i + CHUNK, selected.length).toLocaleString()} of ${selected.length.toLocaleString()}…` })
+      for (let i = 0; i < sending.length; i += CHUNK) {
+        const slice = sending.slice(i, i + CHUNK)
+        setMsg({ kind: 'warn', text: `${holding ? 'Preparing' : 'Queuing'} ${Math.min(i + CHUNK, sending.length).toLocaleString()} of ${sending.length.toLocaleString()}…` })
         const r = await api('/api/print', {
           method: 'POST',
           body: JSON.stringify({
@@ -1207,16 +1231,17 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
             relay: pinned,
             hold: holding,
             kind: dest,
+            allowRepeat: repeat,
             zpl: zplBatch(slice, spec),
           }),
         })
         online = r.online
         n++
       }
-      const total = (selected.length * spec.copies).toLocaleString()
+      const total = (sending.length * spec.copies).toLocaleString()
       setMsg(
         holding
-          ? { kind: 'warn', text: `NOTHING HAS PRINTED YET. ${total} label(s) are prepared in ${n} held batches for the ${PRINTER_NAME[dest]}. Press "Release next batch" below to print the first ${Math.min(500, selected.length)} - nothing goes to the printer until you do.` }
+          ? { kind: 'warn', text: `NOTHING HAS PRINTED YET. ${total} label(s) are prepared in ${n} held batches for the ${PRINTER_NAME[dest]}. Press "Release next batch" below to print the first ${Math.min(500, sending.length)} - nothing goes to the printer until you do.` }
           : online.length
             ? { kind: 'ok', text: `Queued ${total} label(s). Printing at ${online.join(', ')} — progress below.` }
             : {
@@ -1455,6 +1480,12 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, textTransform: 'none', letterSpacing: 0 }}>
             <input type="checkbox" checked={hold} onChange={e => setHold(e.target.checked)} />
             Hold the {batches} batches; release one at a time
+          </label>
+        )}
+        {route !== 'direct' && dest !== 'reprint' && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, textTransform: 'none', letterSpacing: 0 }}>
+            <input type="checkbox" checked={repeat} onChange={e => setRepeat(e.target.checked)} />
+            Print labels that were already sent
           </label>
         )}
       </div>

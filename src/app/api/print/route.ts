@@ -1,7 +1,7 @@
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { json, fail } from '@/lib/api'
-import { listJobs, relaysSeen, queueJobs, onlineRelays, releaseNext, cancelHeld, jobKind, QueueRefused } from '@/lib/printq'
+import { listJobs, relaysSeen, queueJobs, onlineRelays, releaseNext, cancelHeld, jobKind, sentBefore, describeRepeat, QueueRefused, RepeatRefused } from '@/lib/printq'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -35,6 +35,11 @@ export async function POST(req: Request) {
     const codes = Array.isArray(body.codes) ? body.codes.map(String) : []
     const relay = typeof body.relay === 'string' && body.relay ? body.relay : null
     const sql = db()
+    // The Print card asks before it sends: which of this selection is in a job already?
+    if (body.check === true) {
+      const before = await sentBefore(sql, siteId, codes)
+      return json({ ...before, message: before.codes.length ? describeRepeat(before.jobs, before.codes.length) : '' })
+    }
     const jobs = await queueJobs(sql, {
       siteId,
       userId: user.uid,
@@ -43,11 +48,14 @@ export async function POST(req: Request) {
       relay,
       hold: body.hold === true,
       kind: jobKind(body.kind),
+      allowRepeat: body.allowRepeat === true,
       zpl: typeof body.zpl === 'string' && body.zpl ? body.zpl : undefined,
     })
     const online = await onlineRelays(sql, siteId, relay)
     return json({ jobs, online }, 201)
   } catch (e) {
+    if (e instanceof RepeatRefused)
+      return json({ error: e.message + ' Nothing was sent. Tick "Print labels that were already sent" to print them again.', repeat: true, jobs: e.jobs, codes: e.codes }, e.status)
     if (e instanceof QueueRefused) return json({ error: e.message }, e.status)
     return fail(e)
   }

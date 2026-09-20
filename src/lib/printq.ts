@@ -226,6 +226,66 @@ export type QueueInput = {
    * what is stored, never out of thin air.
    */
   zpl?: string
+  /**
+   * Send labels that are already printed or waiting in another job. Off by
+   * default for batch runs: see `sentBefore`. A reprint is a repeat by
+   * definition and is never checked.
+   */
+  allowRepeat?: boolean
+}
+
+export type SentBefore = { id: number; kind: JobKind; status: Job['status']; labels: number; first_code: string; last_code: string }
+
+/** A batch run that would print labels a second time. Carries which, so the screen can leave them out. */
+export class RepeatRefused extends QueueRefused {
+  jobs: SentBefore[]
+  codes: string[]
+  constructor(jobs: SentBefore[], codes: string[]) {
+    super(describeRepeat(jobs, codes.length), 409)
+    this.jobs = jobs
+    this.codes = codes
+  }
+}
+
+const PRINTER: Record<JobKind, string> = { batch: 'the batch printer', batch2: 'the second batch printer', reprint: 'the reprint printer' }
+
+/** "1,500 printed on the batch printer, 3,720 waiting for it (B0901A01 to B4634B01)". */
+export function describeRepeat(jobs: SentBefore[], distinct: number): string {
+  const by = new Map<string, number>()
+  for (const j of jobs) {
+    const k = `${j.status === 'done' ? 'already printed on' : 'already waiting for'} ${PRINTER[j.kind]}`
+    by.set(k, (by.get(k) ?? 0) + j.labels)
+  }
+  const first = jobs.map(j => j.first_code).sort()[0]
+  const last = jobs.map(j => j.last_code).sort().at(-1)
+  return `${distinct.toLocaleString()} of these labels are in print jobs already - ${[...by].map(([k, n]) => `${n.toLocaleString()} ${k}`).join(', ')} (${first} to ${last}).`
+}
+
+/**
+ * Which of these codes are already in a job that printed or is going to.
+ * Failed and cancelled jobs do not count - those labels may never have come
+ * out. Thirty days, so last month's run does not block this month's redo.
+ *
+ * This exists because of one afternoon at site 15: zone B went to the first
+ * batch printer, then "zone C" went to the second with B still ticked, and
+ * 500 B labels came out twice. A zone's worth of duplicate labels is a day's
+ * printing in the bin, and nothing on the Print card said so.
+ */
+export async function sentBefore(sql: Sql, siteId: number, codes: string[]): Promise<{ jobs: SentBefore[]; codes: string[] }> {
+  const all = chunkCodes(codes, Infinity)[0] ?? []
+  if (!all.length) return { jobs: [], codes: [] }
+  const rows = (await sql`
+    SELECT j.id, j.kind, j.status, array_agg(c ORDER BY c) AS hit
+    FROM print_jobs j CROSS JOIN LATERAL unnest(j.codes) AS c
+    WHERE j.site_id = ${siteId} AND j.status IN ('held', 'queued', 'printing', 'done')
+      AND j.created_at > now() - interval '30 days' AND c = ANY(${all})
+    GROUP BY j.id ORDER BY j.id`) as Array<{ id: number; kind: JobKind; status: Job['status']; hit: string[] }>
+  const seen = new Set<string>()
+  for (const r of rows) for (const c of r.hit) seen.add(c)
+  return {
+    jobs: rows.map(r => ({ id: r.id, kind: r.kind, status: r.status, labels: r.hit.length, first_code: r.hit[0], last_code: r.hit[r.hit.length - 1] })),
+    codes: [...seen].sort(),
+  }
 }
 
 export async function queueJobs(sql: Sql, input: QueueInput): Promise<Job[]> {
@@ -243,6 +303,13 @@ export async function queueJobs(sql: Sql, input: QueueInput): Promise<Job[]> {
       `Not in this site's label set, so not printed: ${missing.slice(0, 6).join(', ')}${missing.length > 6 ? '…' : ''}. Generate or add them first.`,
       422,
     )
+
+  // Checked here as well as on the Print card, which asks first and leaves
+  // them out: a screen that skipped the question must not print a zone twice.
+  if (jobKind(input.kind) !== 'reprint' && !input.allowRepeat) {
+    const before = await sentBefore(sql, input.siteId, all)
+    if (before.codes.length) throw new RepeatRefused(before.jobs, before.codes)
+  }
 
   // Rendered here for the screens that have no Print card: the site format,
   // at the stock the site's Print card chose. The width rides in every label.

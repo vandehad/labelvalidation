@@ -127,6 +127,13 @@ npm run user -- <name> <password> [scanner|admin]
   **Windows Mobile gateway** (`wmGateway`, opt-in by port): it forwards `/wm`
   and nothing else, because an MC92N0 cannot do TLS 1.2 and cannot reach the
   app any other way. It must never accept ZPL or expose the setup page.
+- **A batch run does not print a label twice without being told to.**
+  `sentBefore` finds the codes already in a job that printed or is going to
+  (held, queued, printing, done; thirty days), the Print card asks and leaves
+  them out, and `queueJobs` refuses them with 409 for any screen that did not
+  ask - `allowRepeat` is the deliberate way through, and a `reprint` is never
+  checked. The zone buttons toggle: at site 15 "zone C" went to the second
+  printer with B still lit, and 500 B labels came out twice.
 - **`@zxing/*` is reached only through the dynamic import in
   `src/lib/camera.ts`.** It is the phone-camera fallback for browsers without
   `BarcodeDetector`. A static import anywhere would put a 450 KB decoder into

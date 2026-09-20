@@ -191,6 +191,15 @@ labels on their own printer; a second site needs its own relay (any PC, same
 key, different site). Several relays on one site share the work, and the Print
 card can pin a job to a named one.
 
+**A run leaves out what has already been sent.** Before a batch run is queued
+the Print card checks the selection against every job that has printed or is
+waiting to. If any of it is there already it says how many, on which printer
+and which codes, and offers to send only the rest - or nothing. The zone
+buttons toggle, so a zone printed earlier stays selected until it is pressed
+again, and this is what stops it printing twice. To print a run again on
+purpose, tick *Print labels that were already sent*. Single reprints are never
+questioned.
+
 **A run of more than one batch is held.** The Print card splits a run into
 batches of 500 and, by default, creates them *held*: they sit in the queue
 and are never offered to the relay until you press **Release next batch**.
