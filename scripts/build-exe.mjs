@@ -46,6 +46,40 @@ if (process.platform !== 'win32') {
 mkdirSync(out, { recursive: true })
 if (existsSync(exe)) rmSync(exe) // a leftover from an earlier build; never the running relay
 
+// The setup page's script lives inside a template string in the relay, so an
+// escape written once is interpreted twice: a backslash-n in it reaches the
+// browser as a real line break inside a quoted string, the script fails to parse, and
+// every button in the window is dead. `node --check` on the relay cannot see
+// that - the relay file is valid. So serve the page and parse what is served.
+console.log('0/4  checking the setup page the relay serves')
+{
+  const { spawn } = await import('node:child_process')
+  const port = 9187
+  const child = spawn(process.execPath, [entry, '--no-window', '--listen', String(port), '--site', '0', '--app', 'http://127.0.0.1:1', '--key', 'none', '--wm-port', '0'], { stdio: 'ignore' })
+  let html = ''
+  try {
+    for (let i = 0; i < 40 && !html; i++) {
+      await new Promise(r => setTimeout(r, 250))
+      html = await fetch(`http://127.0.0.1:${port}/`).then(r => r.text()).catch(() => '')
+    }
+  } finally {
+    await fetch(`http://127.0.0.1:${port}/quit`, { method: 'POST' }).catch(() => {})
+    child.kill()
+  }
+  const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1]
+  if (!script) {
+    console.error('  FAILED: the relay did not serve its setup page. Nothing was built.')
+    process.exit(1)
+  }
+  try {
+    new Function(script)
+  } catch (e) {
+    console.error(`  FAILED: the setup page's script does not parse - ${e.message}`)
+    console.error('          Every button in the relay window would be dead. Nothing was built.')
+    process.exit(1)
+  }
+}
+
 console.log('1/4  writing the sea config')
 writeFileSync(
   cfg,

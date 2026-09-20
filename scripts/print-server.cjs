@@ -628,8 +628,7 @@ const PAGE = printers => `<!doctype html>
      $('qstat').style.color = q.state === 'ok' ? 'var(--ok)' : q.state === 'error' ? 'var(--bad)' : 'var(--muted)'
      const g = s.gateway || { hits: [] }
      $('wmhits').textContent = g.hits.length
-       ? g.hits.map(h => ago(h.at).padEnd(9) + h.ip.padEnd(16) + (h.method + ' ' + h.url).padEnd(22) + String(h.status).padEnd(5) + (h.note ? h.note + '  ' : '') + h.ua).join('
-')
+       ? g.hits.map(h => ago(h.at).padEnd(9) + h.ip.padEnd(16) + (h.method + ' ' + h.url).padEnd(22) + String(h.status).padEnd(5) + (h.note ? h.note + '  ' : '') + h.ua).join(String.fromCharCode(10)) // not '\\n': this script sits in a template string, where that becomes a real line break
        : (g.port ? 'none yet - nothing has reached this PC on port ' + g.port : 'gateway is off')
    } catch (e) {}
  }
