@@ -22,11 +22,14 @@ export function canonOld(raw: string): string {
   const s = String(raw ?? '')
     .trim()
     .toUpperCase()
-  // Bare digits that can only mean one bin: eight is two digits a part,
-  // four is one digit a part. `01090305` and `1935` are both `01-09-03-05`.
-  // Five to seven digits split more than one way and are left for the
-  // report to suggest against the WMS list.
+  // Bare digits: eight is two digits a part, four is one digit a part, and
+  // seven is a one-digit zone then two digits each - `7010101` is zone 7,
+  // aisle 01, column 01, shelf 01, which is how site 15's WMS writes its
+  // single-digit zones. `01090305`, `1935` and `1090305` are all
+  // `01-09-03-05`. Five and six digits still split more than one way and are
+  // left for the report to suggest against the WMS list.
   if (/^\d{8}$/.test(s)) return `${s.slice(0, 2)}-${s.slice(2, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`
+  if (/^\d{7}$/.test(s)) return `0${s[0]}-${s.slice(1, 3)}-${s.slice(3, 5)}-${s.slice(5, 7)}`
   if (/^\d{4}$/.test(s)) return s.split('').map(d => '0' + d).join('-')
   // Dashed parts pad to two: `1-9-3-5` is `01-09-03-05`.
   const m = /^(\d+)-(\d+)-(\d+)-(\d+)$/.exec(s)
@@ -87,8 +90,11 @@ export async function loadOldBins(sql: Sql, siteId: number, bins: string[], repl
     const slice = bins.slice(i, i + CHUNK)
     await sql`
       INSERT INTO old_bins (site_id, old_bin, canon)
-      SELECT ${siteId}, b, canon_old(b) FROM unnest(${slice}::text[]) AS b
-      ON CONFLICT (site_id, old_bin) DO NOTHING`
+      SELECT DISTINCT ON (canon_old(b)) ${siteId}, b, canon_old(b) FROM unnest(${slice}::text[]) AS b
+      ORDER BY canon_old(b), (b = canon_old(b)) DESC, b
+      -- no conflict target: a bin already listed under another spelling of
+      -- itself (7010101 / 07-01-01-01) trips the canon index, not the key
+      ON CONFLICT DO NOTHING`
   }
   const after = (await sql`SELECT count(*)::int AS n FROM old_bins WHERE site_id = ${siteId}`) as Array<{ n: number }>
   return { added: after[0].n - (replace ? 0 : before[0].n), total: after[0].n }

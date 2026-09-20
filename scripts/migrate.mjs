@@ -175,6 +175,8 @@ const steps = [
       SELECT CASE
         WHEN btrim(t) ~ '^[0-9]{8}$'
           THEN substr(btrim(t), 1, 2) || '-' || substr(btrim(t), 3, 2) || '-' || substr(btrim(t), 5, 2) || '-' || substr(btrim(t), 7, 2)
+        WHEN btrim(t) ~ '^[0-9]{7}$'
+          THEN '0' || substr(btrim(t), 1, 1) || '-' || substr(btrim(t), 2, 2) || '-' || substr(btrim(t), 4, 2) || '-' || substr(btrim(t), 6, 2)
         WHEN btrim(t) ~ '^[0-9]{4}$'
           THEN '0' || substr(btrim(t), 1, 1) || '-0' || substr(btrim(t), 2, 1) || '-0' || substr(btrim(t), 3, 1) || '-0' || substr(btrim(t), 4, 1)
         WHEN upper(btrim(t)) ~ '^[0-9]+-[0-9]+-[0-9]+-[0-9]+$'
@@ -204,6 +206,20 @@ const steps = [
       FOR EACH ROW EXECUTE FUNCTION pairs_set_canon()`],
   ['backfill pairs.old_canon', `UPDATE pairs SET old_canon = canon_old(old_bin) WHERE old_canon IS NULL`],
   ['pairs by canon', `CREATE INDEX IF NOT EXISTS pairs_canon_idx ON pairs (site_id, old_canon)`],
+  // canon_old() is CREATE OR REPLACE above, so a change to its rules reaches
+  // new rows at once - but stored canons are as old as the rule that wrote
+  // them. These bring every stored one up to date; both do nothing when
+  // nothing has changed.
+  ['re-canon old_bins', `UPDATE old_bins SET canon = canon_old(old_bin) WHERE canon IS DISTINCT FROM canon_old(old_bin)`],
+  ['re-canon pairs', `UPDATE pairs SET old_canon = canon_old(old_bin) WHERE old_canon IS DISTINCT FROM canon_old(old_bin)`],
+  // One bin, one row. Site 15's WMS export lists 859 shelves twice - once as
+  // 07-01-01-01 and once as 7010101 - which overstated the total and would
+  // let one pair tick off two rows. Keep the row written in canonical form
+  // where there is one, else the first; then make it impossible to recur.
+  ['one row per bin', `DELETE FROM old_bins o USING old_bins k
+      WHERE o.site_id = k.site_id AND o.canon = k.canon AND o.old_bin <> k.old_bin
+        AND (k.old_bin = k.canon OR (o.old_bin <> o.canon AND k.old_bin < o.old_bin))`],
+  ['old_bins canon unique', `CREATE UNIQUE INDEX IF NOT EXISTS old_bins_canon_unique ON old_bins (site_id, canon)`],
   // Why a pair was held for a second look and kept anyway - see src/lib/pairing.ts.
   ['pairs.warned', `ALTER TABLE pairs ADD COLUMN IF NOT EXISTS warned text`],
   // Which printer a job is for: 'batch' runs, or 'reprint' singles from the floor.

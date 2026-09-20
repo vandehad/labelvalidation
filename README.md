@@ -445,8 +445,10 @@ to go* on the handheld, `x of y WMS bins paired` on the MC92N0, *WMS bins
 paired* on the desktop - and Reconcile shows **WMS bins not yet paired**, the
 exception report, with a `.csv` download of the full list.
 
-Comparison is on a canonical form: the WMS writes `01-09-03-05`, a scan may
-say `1-9-3-5`, and both count as the same bin.
+Comparison is on a canonical form, so one bin written several ways is one
+bin: `01-09-03-05`, `1-9-3-5`, `01090305`, `1935`, and seven bare digits read
+as a one-digit zone then two digits each - `7010101` is zone 7, aisle 01,
+column 01, shelf 01.
 
 The report has a second half: **suspect old bins in pairs** - pairs whose old
 bin is not a WMS bin. `01090305` or `1935` keyed for `01-09-03-05` is flagged
