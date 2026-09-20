@@ -1072,7 +1072,7 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
       if (what === 'cancel') {
         const r = await api(`/api/print/${id}`, { method: 'DELETE' })
         if (r.result === 'stopping')
-          setMsg({ kind: 'warn', text: `Stopping job #${id}. The relay feeds the printer 50 labels at a time and checks between, so up to 50 more may come out.` })
+          setMsg({ kind: 'warn', text: `Stop asked for on job #${id}. A batch goes to the printer without a break, so if it is already in the printer's memory it will finish - switch the printer off to stop it sooner. Batches still held have not gone anywhere.` })
       } else await api(`/api/print/${id}`, { method: 'POST', body: JSON.stringify({ action: what }) })
       await loadQueue()
     } catch (e) {

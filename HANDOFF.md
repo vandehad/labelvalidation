@@ -231,12 +231,19 @@ than one batch by default, shows the next batch's code range, and offers
 one-label jobs go straight out. And a batch that is printing can be stopped:
 the relay cuts the job at `^PQ` label blocks into pieces of 50 (`--piece`),
 asks `GET /api/print/[id]` with its key between pieces, and a `cancelled`
-status ends the job there, reported as "Stopped after N of M labels". The relay paces
-pieces at `--lps` labels a second (default 3) because a Zebra accepts a
-whole job into memory in a second; without pacing every piece would be in
-the buffer before the first check. Each check refreshes `claimed_at`, so a
-paced batch outlasting `STALE_MINUTES` is not re-queued to another relay. At
-most one piece is in the printer's buffer when Stop is pressed.
+status ends the job there, reported as "Stopped after N of M labels". That
+only bites when the relay paces itself (`--lps`, labels a second), because a
+Zebra accepts a whole job into memory in a second and every piece is in the
+buffer before the first check. **Pacing is off by default as of 20 Sep 2026**:
+it defaulted to 3 a second, a ZT411 prints far faster, and the floor saw the
+printer stand idle after every fifty labels and asked for it gone. Unpaced,
+the held batch is the unit of stopping - which is what it was built to be.
+The way to have both is to stop guessing: ask the printer (`~HS` over the
+same 9100 socket returns formats left in its buffer) and feed it the next
+piece when it runs low. Not built - it needs a real printer to prove, and only
+works for network printers, not ones reached through a Windows queue. With
+pacing on, each check refreshes `claimed_at`, so a paced batch outlasting
+`STALE_MINUTES` is not re-queued to another relay.
 
 **The MC92N0 reaches the app through the relay, over plain http.** Windows
 Mobile 6.5 IE tops out at TLS 1.0; Vercel requires 1.2. The device could not

@@ -109,20 +109,27 @@ const VERSION = '3'
 /**
  * Labels per piece. A job goes to the printer in pieces this size, and the
  * app is asked between pieces whether the job has been cancelled. Once bytes
- * are in the printer's buffer nothing can pull them back, so this is the most
- * that prints after someone presses Stop. About fifteen seconds of printing.
+ * are in the printer's buffer nothing can pull them back. With pacing on
+ * (`--lps`) a piece is the most that prints after someone presses Stop; with
+ * it off the pieces follow each other in well under a second, and Stop only
+ * catches a batch that has not started.
  */
 const PIECE = Number(arg('piece') || saved.piece || 50)
 
 /**
- * Labels per second the printer actually prints. A Zebra swallows a whole job
- * into memory in a second, so "bytes accepted" says nothing about progress -
- * the relay has to pace itself. Between pieces it waits this long for the
- * piece just sent, checking for a stop as it waits. A GX420d at 4 ips on 1in
- * labels does a little under 4/s; 3 leaves the buffer never more than about
- * a piece ahead. Too low only means the printer idles briefly between pieces.
+ * Pacing, in labels a second. 0 - the default - is none: the pieces go to the
+ * printer back to back and the batch prints without a break.
+ *
+ * It was 3 by default. A Zebra swallows a whole job into memory in a second,
+ * so the only way Stop can catch a batch part-way is for the relay to hold the
+ * next piece back until the last has had time to print. But the wait is a
+ * guess at the printer's speed, a ZT411 prints far faster than 3 a second, and
+ * what the floor saw was the printer standing idle after every fifty labels.
+ * A run is held and released a batch at a time, so the place to stop one is
+ * before the next batch leaves the app. `--lps 3` brings the pacing back for
+ * anyone who would rather have Stop bite mid-batch than have the speed.
  */
-const LPS = Math.max(0.5, Number(arg('lps') || saved.lps || 3))
+const LPS = Math.max(0, Number(arg('lps') || saved.lps || 0))
 
 /**
  * The Windows Mobile gateway port. 0 is off. When on, http://<this PC>:<port>/wm
@@ -136,7 +143,7 @@ let link = {
   site: Number(arg('site') || saved.site || 0),
   siteName: saved.siteName || '',
 }
-const persist = () => saveConfig({ ...target, reprint, ...link, listen: LISTEN, allow: ALLOW.join(','), wmPort: WM_PORT })
+const persist = () => saveConfig({ ...target, reprint, ...link, listen: LISTEN, allow: ALLOW.join(','), wmPort: WM_PORT, lps: LPS })
 
 /** This PC's LAN addresses, for the address to type into a handheld. */
 function lanAddresses() {
@@ -213,10 +220,11 @@ async function sendJob(job) {
     await send(pieces[i].zpl, targetFor(job.kind))
     sent += pieces[i].labels
     if (i === pieces.length - 1) break
-    // Let the printer work through that piece before the next goes into its
-    // buffer. Every look also refreshes the job's claim, so a long paced
-    // batch is not mistaken for a dead relay and handed out again.
-    const until = Date.now() + (pieces[i].labels / LPS) * 1000
+    // Paced: let the printer work through that piece before the next goes
+    // into its buffer. Every look also refreshes the job's claim, so a long
+    // paced batch is not mistaken for a dead relay and handed out again.
+    // Unpaced, the one look below is all that stands between pieces.
+    const until = LPS ? Date.now() + (pieces[i].labels / LPS) * 1000 : 0
     while (Date.now() < until) {
       await new Promise(r => setTimeout(r, Math.min(2000, until - Date.now())))
       if (await wantsStop(job.id)) return { stopped: true, sent }

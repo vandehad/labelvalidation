@@ -191,16 +191,20 @@ the relay claims it, and once a batch is in the printer's buffer nothing on
 our side can pull it back. Untick *Hold the batches* to send a run straight
 through.
 
-**A batch that is printing can be stopped.** The relay does not hand a batch
-to the printer whole. It cuts the ZPL at label boundaries into pieces of 50
-and, between pieces, asks the app whether the job has been cancelled. It also paces
-itself: a Zebra swallows a whole job into memory in a second, so the relay
-waits for each piece to print (about 3 labels a second, `--lps`) before the
-next goes into the buffer. **Stop** on a printing job therefore takes effect
-within one piece: what is already in the printer's buffer prints, up to 50
-labels, and nothing after it does. The
-job is marked *cancelled* with how far it got. Whole-batch sends were the
-reason Cancel looked broken: once 500 labels are in the buffer they print.
+**A batch prints without a break, and the place to stop a run is between
+batches.** The relay sends a batch to the printer in pieces of 50, one straight
+after another, so the printer never stands idle mid-batch. A Zebra takes a
+whole batch into memory in a second or two, and once it is there nothing on
+our side can pull it back - which is what the held batches above are for.
+
+The relay used to wait between pieces for the last one to print, so that
+**Stop** could catch a batch part-way. The wait was a guess at the printer's
+speed (3 labels a second), a ZT411 is far quicker than that, and what it
+looked like on the floor was a printer pausing after every fifty labels. It is
+off by default now. Start the relay with `--lps 3` (labels a second; match it
+to the printer) to bring it back: Stop then takes effect within one piece of
+50 and the job is marked *cancelled* with how far it got, at the price of the
+pauses whenever the number is lower than the printer's real speed.
 
 It polls every couple of seconds while there is work and every five when
 idle, so a released batch starts within five seconds. A job it fails on — printer off, cable out — is reported back with the

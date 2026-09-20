@@ -347,9 +347,10 @@ export async function cancelJob(sql: Sql, id: number): Promise<'gone' | 'stoppin
 
 /**
  * The relay asking, between pieces, whether to carry on. The ask also
- * refreshes the claim: a 500-label batch paced at three a second runs close
- * to three minutes, and without this `claimNext` would decide the relay had
- * died and hand the same batch to another.
+ * refreshes the claim: a relay started with `--lps` paces a batch to the
+ * printer's speed, 500 labels at three a second runs close to three minutes,
+ * and without this `claimNext` would decide the relay had died and hand the
+ * same batch to another.
  */
 export async function jobStatus(sql: Sql, id: number): Promise<JobStatus | null> {
   const live = (await sql`
