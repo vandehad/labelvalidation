@@ -35,6 +35,18 @@ type Sql = ReturnType<typeof import('./db').db>
  */
 export type JobStatus = 'held' | 'queued' | 'printing' | 'done' | 'failed' | 'cancelled'
 
+/**
+ * Which of a relay's printers a job is for. 'batch' is a run off the Print
+ * card, 'batch2' the same for a relay's second batch printer, 'reprint' a
+ * single label asked for from the floor. A relay without the printer a job
+ * names sends it to its first - a job is never left waiting for a printer
+ * that was not set up.
+ */
+export type JobKind = 'batch' | 'batch2' | 'reprint'
+
+/** Anything not recognised is a plain batch. */
+export const jobKind = (raw: unknown): JobKind => (raw === 'reprint' || raw === 'batch2' ? raw : 'batch')
+
 export type Job = {
   id: number
   site_id: number
@@ -43,7 +55,7 @@ export type Job = {
   first_code: string | null
   last_code: string | null
   copies: number
-  kind: 'batch' | 'reprint'
+  kind: JobKind
   relay: string | null
   status: JobStatus
   error: string | null
@@ -193,7 +205,7 @@ export type QueueInput = {
    * so a torn label comes out beside the aisles, not at the back of a
    * 500-label run in the office.
    */
-  kind?: 'batch' | 'reprint'
+  kind?: JobKind
   /**
    * ZPL already rendered by the caller (the desktop, with its stock and nudge
    * settings). Without it the site format is rendered here. Either way the
@@ -232,7 +244,7 @@ export async function queueJobs(sql: Sql, input: QueueInput): Promise<Job[]> {
     const rows = (await sql`
       INSERT INTO print_jobs (site_id, codes, copies, zpl, relay, user_id, status, kind)
       VALUES (${input.siteId}, ${codes}, ${copies}, ${zpl}, ${relay}, ${input.userId}, ${input.hold ? 'held' : 'queued'},
-              ${input.kind === 'reprint' ? 'reprint' : 'batch'})
+              ${jobKind(input.kind)})
       RETURNING id, site_id, cardinality(codes)::int AS labels, codes[1] AS first_code,
                 codes[cardinality(codes)] AS last_code, copies, kind, relay, status, error,
                 created_at, claimed_at, claimed_by, done_at`) as Array<Omit<Job, 'username'>>
@@ -253,7 +265,7 @@ export async function onlineRelays(sql: Sql, siteId: number, relay?: string | nu
 
 /* ---------- the relay's side ---------- */
 
-export type Claimed = { id: number; codes: string[]; copies: number; zpl: string; kind: 'batch' | 'reprint' }
+export type Claimed = { id: number; codes: string[]; copies: number; zpl: string; kind: JobKind }
 
 /**
  * Hand the next job for this site to the relay that asked. One statement

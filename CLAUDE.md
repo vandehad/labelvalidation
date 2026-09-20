@@ -114,9 +114,12 @@ npm run user -- <name> <password> [scanner|admin]
   LAN push path - it will work on one laptop and nowhere else. `queueJobs`
   checks every code against the site's stored `labels`, so the reprint rule
   above holds from every screen; keep that check. Jobs carry a `kind`:
-  `reprint` for a single label asked for from the floor, `batch` for a run. A
-  relay with a reprint printer set sends reprints there, and `claimNext` hands
-  reprints out ahead of batches. The one LAN listener is the
+  `reprint` for a single label asked for from the floor, `batch` for a run,
+  `batch2` for a run sent to a relay's second batch printer. A relay sends
+  each to the printer it names and falls back to its first when that one is
+  not set - never leave a job waiting on a printer nobody configured.
+  `claimNext` hands reprints out ahead of batches. "Both printers" is the
+  Print card alternating kinds batch by batch, not a kind of its own. The one LAN listener is the
   **Windows Mobile gateway** (`wmGateway`, opt-in by port): it forwards `/wm`
   and nothing else, because an MC92N0 cannot do TLS 1.2 and cannot reach the
   app any other way. It must never accept ZPL or expose the setup page.

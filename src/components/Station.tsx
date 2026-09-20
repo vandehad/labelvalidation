@@ -962,7 +962,9 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
   const [hold, setHold] = useState(true)
   // Which of the relay's two printers: the batch printer for runs, or the
   // reprint printer out on the floor. A scanner's card only ever reprints.
-  const [dest, setDest] = useState<'batch' | 'reprint'>(limited ? 'reprint' : 'batch')
+  // 'both' is not a kind a job can carry: it is this card alternating a run's
+  // batches between the relay's two batch printers, first to one, next to the other.
+  const [dest, setDest] = useState<'batch' | 'batch2' | 'both' | 'reprint'>(limited ? 'reprint' : 'batch')
   const [dpi, setDpi] = useState<203 | 300>(203)
   const [symbology, setSymbology] = useState<Symbology>('code39')
   // The site's own format is a 4in format - its padded 14-character symbol at
@@ -1191,7 +1193,15 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
         setMsg({ kind: 'warn', text: `${holding ? 'Preparing' : 'Queuing'} ${Math.min(i + CHUNK, selected.length).toLocaleString()} of ${selected.length.toLocaleString()}…` })
         const r = await api('/api/print', {
           method: 'POST',
-          body: JSON.stringify({ siteId, codes: slice, copies: spec.copies, relay: pinned, hold: holding, kind: dest, zpl: zplBatch(slice, spec) }),
+          body: JSON.stringify({
+            siteId,
+            codes: slice,
+            copies: spec.copies,
+            relay: pinned,
+            hold: holding,
+            kind: dest === 'both' ? (n % 2 ? 'batch2' : 'batch') : dest,
+            zpl: zplBatch(slice, spec),
+          }),
         })
         online = r.online
         n++
@@ -1199,7 +1209,12 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
       const total = (selected.length * spec.copies).toLocaleString()
       setMsg(
         holding
-          ? { kind: 'warn', text: `NOTHING HAS PRINTED YET. ${total} label(s) are prepared in ${n} held batches. Press "Release next batch" below to print the first ${Math.min(500, selected.length)} - nothing goes to the printer until you do.` }
+          ? {
+              kind: 'warn',
+              text:
+                `NOTHING HAS PRINTED YET. ${total} label(s) are prepared in ${n} held batches. Press "Release next batch" below to print the first ${Math.min(500, selected.length)} - nothing goes to the printer until you do.` +
+                (dest === 'both' ? ' The batches alternate between the two batch printers, so press it twice to start both.' : ''),
+            }
           : online.length
             ? { kind: 'ok', text: `Queued ${total} label(s). Printing at ${online.join(', ')} — progress below.` }
             : {
@@ -1364,8 +1379,10 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
         {route !== 'direct' && (
           <div style={{ flex: '0 1 260px' }}>
             <label>Printer at the relay</label>
-            <select value={dest} onChange={e => setDest(e.target.value as 'batch' | 'reprint')} disabled={limited}>
+            <select value={dest} onChange={e => setDest(e.target.value as 'batch' | 'batch2' | 'both' | 'reprint')} disabled={limited}>
               <option value="batch">Batch printer — for runs</option>
+              <option value="batch2">Second batch printer</option>
+              <option value="both">Both batch printers — batches alternate</option>
               <option value="reprint">Reprint printer — out on the floor</option>
             </select>
           </div>
@@ -1445,7 +1462,8 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
         <div className="msg show warn" style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <span>
             <b>{held.length}</b> batch{held.length === 1 ? '' : 'es'} held, {held.reduce((a, j) => a + j.labels * j.copies, 0).toLocaleString()} labels. Next up:{' '}
-            <code>{held[held.length - 1].first_code}</code> → <code>{held[held.length - 1].last_code}</code>.
+            <code>{held[held.length - 1].first_code}</code> → <code>{held[held.length - 1].last_code}</code>
+            {held[held.length - 1].kind === 'batch2' ? ' on the second batch printer' : ''}.
           </span>
           <button className="act" onClick={() => runAction('release-next')}>
             Release next batch
@@ -1488,7 +1506,10 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
                     <span className={`pill ${j.status === 'done' ? 'ok' : j.status === 'failed' || j.status === 'cancelled' ? 'bad' : j.status === 'held' ? '' : 'warn'}`}>{j.status}</span>
                     {j.error ? ` ${j.error}` : ''}
                   </td>
-                  <td>{j.claimed_by ?? j.relay ?? 'any'}</td>
+                  <td>
+                    {j.claimed_by ?? j.relay ?? 'any'}
+                    {j.kind === 'batch2' ? ' · printer 2' : j.kind === 'reprint' ? ' · reprint' : ''}
+                  </td>
                   <td>{j.username ?? ''}</td>
                   <td>{new Date(j.created_at).toLocaleTimeString()}</td>
                   <td>

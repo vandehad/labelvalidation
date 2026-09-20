@@ -1,7 +1,7 @@
 import { db } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { json, fail } from '@/lib/api'
-import { listJobs, relaysSeen, queueJobs, onlineRelays, releaseNext, cancelHeld, QueueRefused } from '@/lib/printq'
+import { listJobs, relaysSeen, queueJobs, onlineRelays, releaseNext, cancelHeld, jobKind, QueueRefused } from '@/lib/printq'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -42,7 +42,7 @@ export async function POST(req: Request) {
       copies: Number(body.copies) || 1,
       relay,
       hold: body.hold === true,
-      kind: body.kind === 'reprint' ? 'reprint' : 'batch',
+      kind: jobKind(body.kind),
       zpl: typeof body.zpl === 'string' && body.zpl ? body.zpl : undefined,
     })
     const online = await onlineRelays(sql, siteId, relay)

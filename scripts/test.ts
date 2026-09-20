@@ -33,7 +33,7 @@ import {
   barcodeData,
 } from '../src/lib/zpl.ts'
 import { debounceCode } from '../src/lib/camera.ts'
-import { parseBearer, relayName, chunkCodes, newRelayKey, sameKey } from '../src/lib/printq.ts'
+import { parseBearer, relayName, chunkCodes, newRelayKey, sameKey, jobKind } from '../src/lib/printq.ts'
 import { canonOld, cleanOldBins, suggestOldBin, looksLikeWmsBin } from '../src/lib/oldbins.ts'
 import { oldAisle, aisleWarning } from '../src/lib/pairguard.ts'
 import { looksLikeUpc } from '../src/lib/bins.ts'
@@ -571,6 +571,8 @@ ok('the separator is configurable', displayCode('A0000A01', ' - ') === 'A00 - 00
   ok('codes uppercased, trimmed, deduplicated', chunks.flat().join(',') === 'M0501B01,M0501B02,M0501B03')
   ok('and sliced to the chunk size', chunks.length === 2 && chunks[0].length === 2 && chunks[1].length === 1)
   ok('nothing in, nothing out', chunkCodes([]).length === 0)
+  ok('a job is for the batch printer, the second batch printer or the reprint printer', jobKind('batch') === 'batch' && jobKind('batch2') === 'batch2' && jobKind('reprint') === 'reprint')
+  ok('and anything else is a plain batch, "both" included - that is the Print card alternating, not a kind', jobKind('both') === 'batch' && jobKind(undefined) === 'batch' && jobKind(2) === 'batch')
   ok('the default chunk is one job per 500', chunkCodes(Array.from({ length: 1001 }, (_, i) => `A${String(i).padStart(4, '0')}A01`)).length === 3)
 }
 

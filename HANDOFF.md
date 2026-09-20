@@ -245,6 +245,18 @@ works for network printers, not ones reached through a Windows queue. With
 pacing on, each check refreshes `claimed_at`, so a paced batch outlasting
 `STALE_MINUTES` is not re-queued to another relay.
 
+**One relay, three printers (20 Sep 2026).** Batch, second batch, reprint.
+`print_jobs.kind` is `batch | batch2 | reprint` (`jobKind` in
+`src/lib/printq.ts` is the one place that decides), and the relay's
+`targetFor(kind)` picks the printer, falling back to the first when the named
+one is unset. The relay is still one loop taking one job at a time; that is
+enough because an unpaced batch is in the printer's memory in a second or
+two, so two printers run side by side out of their own buffers. If pacing
+(`--lps`) is switched on, that stops being true - a paced batch holds the loop
+for minutes and the second printer waits behind it. A loop per printer is the
+fix if anyone needs pacing and two printers together. Proven with fake
+printers (`basis_files/e2e-batch2.mjs`), not yet on two real ones.
+
 **The MC92N0 reaches the app through the relay, over plain http.** Windows
 Mobile 6.5 IE tops out at TLS 1.0; Vercel requires 1.2. The device could not
 load the page at all - not a rendering problem, a handshake that fails before

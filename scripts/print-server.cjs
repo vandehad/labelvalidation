@@ -89,7 +89,23 @@ let reprint = {
   port: Number(arg('reprint-port') || savedR.port || 9100),
   printer: arg('reprint-printer') || savedR.printer || '',
 }
-const targetFor = kind => (kind === 'reprint' && reprint.mode ? reprint : target)
+
+/**
+ * A second batch printer. Two printers on one relay halve a long run: the
+ * Print card sends a run to either, or alternates its batches between the two.
+ * Jobs for it arrive marked 'batch2'. With this unset they go to the first
+ * batch printer, so a run queued for a second printer that was never set up,
+ * or has since been taken away, still prints rather than waiting for ever.
+ */
+const savedB = saved.batch2 || {}
+let batch2 = {
+  mode: arg('batch2-printer') ? 'local' : arg('batch2-host') ? 'network' : savedB.mode || null,
+  host: arg('batch2-host') || savedB.host || '',
+  port: Number(arg('batch2-port') || savedB.port || 9100),
+  printer: arg('batch2-printer') || savedB.printer || '',
+}
+const targetFor = kind =>
+  kind === 'reprint' && reprint.mode ? reprint : kind === 'batch2' && batch2.mode ? batch2 : target
 
 const LISTEN = Number(arg('listen', saved.listen || '9110'))
 const ALLOW = (arg('allow') || saved.allow || 'https://labelvalidation.vercel.app,http://localhost:3000')
@@ -100,7 +116,8 @@ const ALLOW = (arg('allow') || saved.allow || 'https://labelvalidation.vercel.ap
 const describe = (t = target) =>
   !t.mode ? 'nothing yet' : t.mode === 'network' ? `${t.host}:${t.port}` : `queue "${t.printer}"`
 /** Both printers in one line, for the app's relay table. */
-const describeAll = () => describe() + (reprint.mode ? ` | reprints -> ${describe(reprint)}` : '')
+const describeAll = () =>
+  describe() + (batch2.mode ? ` | batch 2 -> ${describe(batch2)}` : '') + (reprint.mode ? ` | reprints -> ${describe(reprint)}` : '')
 
 /* ---------------- the web app's print queue ---------------- */
 
@@ -143,7 +160,7 @@ let link = {
   site: Number(arg('site') || saved.site || 0),
   siteName: saved.siteName || '',
 }
-const persist = () => saveConfig({ ...target, reprint, ...link, listen: LISTEN, allow: ALLOW.join(','), wmPort: WM_PORT, lps: LPS })
+const persist = () => saveConfig({ ...target, reprint, batch2, ...link, listen: LISTEN, allow: ALLOW.join(','), wmPort: WM_PORT, lps: LPS })
 
 /** This PC's LAN addresses, for the address to type into a handheld. */
 function lanAddresses() {
@@ -474,6 +491,33 @@ const PAGE = printers => `<!doctype html>
   <div class="msg" id="msg"></div>
 </div>
 <div class="card">
+  <h2>Second batch printer <span style="font-weight:normal;color:var(--muted)">- optional</span></h2>
+  <p>A second printer for the big runs. On the Print card a run can then go to this one, or be split across
+     both with its batches alternating, so a long run takes half the time.</p>
+  <p>The second batch printer is <span class="now" id="bnow">${batch2.mode ? esc(describe(batch2)) : 'not set - everything goes to the first'}</span></p>
+  <label>Connection</label>
+  <select id="bmode">
+    <option value=""${!batch2.mode ? ' selected' : ''}>None - one batch printer</option>
+    <option value="network"${batch2.mode === 'network' ? ' selected' : ''}>Network - the printer has its own IP address</option>
+    <option value="local"${batch2.mode === 'local' ? ' selected' : ''}>USB or shared - installed on this PC</option>
+  </select>
+  <div id="bnet" hidden>
+    <div class="row">
+      <div><label>IP address</label><input id="bhost" value="${esc(batch2.host)}" placeholder="192.168.60.83"></div>
+      <div style="flex:0 0 110px"><label>Port</label><input id="bport" value="${batch2.port}"></div>
+    </div>
+  </div>
+  <div id="bloc" hidden>
+    <label>Installed printer</label>
+    <select id="bprinter">
+      ${printers.length ? printers.map(p => `<option${p === batch2.printer ? ' selected' : ''}>${p}</option>`).join('') : '<option value="">none found</option>'}
+    </select>
+  </div>
+  <button id="bsave">Save the second batch printer</button>
+  <button class="ghost" id="btest">Print a test label there</button>
+  <div class="msg" id="bmsg"></div>
+</div>
+<div class="card">
   <h2>Reprint printer <span style="font-weight:normal;color:var(--muted)">- optional</span></h2>
   <p>Single labels asked for from the floor - a reprint of a torn label, a bin added in an aisle - can come
      out of a different printer from the big runs, so nobody waits at the back of a 500-label batch. Put this
@@ -621,6 +665,20 @@ const PAGE = printers => `<!doctype html>
    rsay('ok', 'Sending…')
    const [ok, d] = await post('/test-reprint', {})
    rsay(ok ? 'ok' : 'bad', ok ? 'Sent. A label should come out of the reprint printer.' : (d.error || 'Failed.'))
+ }
+ const bsync = () => { const m = $('bmode').value; $('bnet').hidden = m !== 'network'; $('bloc').hidden = m !== 'local' }
+ $('bmode').onchange = bsync; bsync()
+ const bsay = (k, t) => { $('bmsg').className = 'msg ' + k; $('bmsg').textContent = t }
+ $('bsave').onclick = async () => {
+   const [ok, d] = await post('/target-batch2', {
+     mode: $('bmode').value, host: $('bhost').value.trim(), port: Number($('bport').value) || 9100, printer: $('bprinter').value,
+   })
+   if (ok) { $('bnow').textContent = d.target; bsay('ok', 'Saved.') } else bsay('bad', d.error || 'Could not save that.')
+ }
+ $('btest').onclick = async () => {
+   bsay('ok', 'Sending…')
+   const [ok, d] = await post('/test-batch2', {})
+   bsay(ok ? 'ok' : 'bad', ok ? 'Sent. A label should come out of the second batch printer.' : (d.error || 'Failed.'))
  }
  const ago = t => (t ? Math.round((Date.now() - t) / 1000) + 's ago' : 'never')
  async function refreshStatus() {
@@ -826,6 +884,7 @@ const server = http.createServer(async (req, res) => {
         ok: Boolean(target.mode),
         target: describe(),
         reprint: reprint.mode ? describe(reprint) : null,
+        batch2: batch2.mode ? describe(batch2) : null,
         mode: target.mode,
         configured: Boolean(target.mode),
         queue: {
@@ -905,6 +964,30 @@ const server = http.createServer(async (req, res) => {
       return void json(res, 200, { ok: true, site: found.name })
     }
 
+    if (req.method === 'POST' && url === '/target-batch2') {
+      const body = JSON.parse((await readBody(req, 64 * 1024)) || '{}')
+      if (body.mode === 'network' && !String(body.host || '').trim())
+        return void json(res, 400, { error: 'An IP address is needed.' })
+      if (body.mode === 'local' && !String(body.printer || '').trim())
+        return void json(res, 400, { error: 'Pick an installed printer.' })
+      batch2 = {
+        mode: body.mode === 'local' ? 'local' : body.mode === 'network' ? 'network' : null,
+        host: String(body.host || '').trim(),
+        port: Number(body.port) || 9100,
+        printer: String(body.printer || ''),
+      }
+      persist()
+      console.log('  second batch printer: ' + (batch2.mode ? describe(batch2) : 'none'))
+      return void json(res, 200, { ok: true, target: batch2.mode ? describe(batch2) : 'not set - everything goes to the first' })
+    }
+
+    if (req.method === 'POST' && url === '/test-batch2') {
+      if (!batch2.mode) return void json(res, 409, { error: 'No second batch printer is set.' })
+      await send(TEST_ZPL, batch2)
+      console.log('  test label -> second batch printer ' + describe(batch2))
+      return void json(res, 200, { ok: true })
+    }
+
     if (req.method === 'POST' && url === '/target-reprint') {
       const body = JSON.parse((await readBody(req, 64 * 1024)) || '{}')
       if (body.mode === 'network' && !String(body.host || '').trim())
@@ -963,6 +1046,7 @@ server.listen(LISTEN, '127.0.0.1', () => {
   console.log('  ' + '-'.repeat(40))
   console.log('  setup page  ' + url)
   console.log('  printing to ' + describe())
+  if (batch2.mode) console.log('  batch 2 to  ' + describe(batch2))
   if (reprint.mode) console.log('  reprints to ' + describe(reprint))
   console.log('  accepting   ' + ALLOW.join(', '))
   if (link.key && link.site) console.log(`  queue       ${link.app} as "${link.name}" for ${link.siteName || 'site ' + link.site}`)
