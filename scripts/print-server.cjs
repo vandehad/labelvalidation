@@ -134,7 +134,8 @@ const describeAll = () =>
 /* ---------------- the web app's print queue ---------------- */
 
 // 4: a loop per printer, and a second batch printer.
-const VERSION = '4'
+// 5: waits for a busy printer instead of hanging up on it after two minutes.
+const VERSION = '5'
 
 /**
  * Labels per piece. A job goes to the printer in pieces this size, and the
@@ -173,7 +174,7 @@ let link = {
   site: Number(arg('site') || saved.site || 0),
   siteName: saved.siteName || '',
 }
-const persist = () => saveConfig({ ...target, reprint, batch2, ...link, listen: LISTEN, allow: ALLOW.join(','), wmPort: WM_PORT, lps: LPS })
+const persist = () => saveConfig({ ...target, reprint, batch2, ...link, listen: LISTEN, allow: ALLOW.join(','), wmPort: WM_PORT, lps: LPS, idleSeconds: IDLE_MS / 1000 })
 
 /** This PC's LAN addresses, for the address to type into a handheld. */
 function lanAddresses() {
@@ -247,7 +248,26 @@ async function sendJob(job) {
   const pieces = splitJob(job.zpl, PIECE)
   let sent = 0
   for (let i = 0; i < pieces.length; i++) {
-    await send(pieces[i].zpl, targetFor(job.kind))
+    // A busy printer can hold a piece for minutes. While it does, keep looking
+    // up: each look refreshes the claim, so the app does not decide this relay
+    // has died and hand the batch out again, and a Stop pressed meanwhile
+    // drops the connection rather than waiting for the printer to come back.
+    const waiting = new AbortController()
+    let stopping = false
+    const watch = setInterval(async () => {
+      if (!stopping && (await wantsStop(job.id))) {
+        stopping = true
+        waiting.abort()
+      }
+    }, WATCH_MS)
+    try {
+      await send(pieces[i].zpl, targetFor(job.kind), waiting.signal)
+    } catch (e) {
+      if (stopping) return { stopped: true, sent }
+      throw e
+    } finally {
+      clearInterval(watch)
+    }
     sent += pieces[i].labels
     if (i === pieces.length - 1) break
     // Paced: let the printer work through that piece before the next goes
@@ -353,19 +373,64 @@ const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').re
 
 /* ---------------- the two backends ---------------- */
 
-function sendTcp(zpl, t = target) {
+/**
+ * How long a printer may take no data at all before the relay gives up on it.
+ *
+ * It was two minutes, and that lost labels. A printer that is busy - still
+ * printing the batch before, paused while someone tears off a stack, out of
+ * labels - stops reading, and a Zebra with a full buffer stays that way for as
+ * long as the batch ahead takes to print, which is more than two minutes for
+ * 500 labels. The relay took the silence for a dead printer and destroyed the
+ * socket, and a destroyed socket throws away everything not yet delivered: the
+ * tail of the batch never printed, and the job said "Timed out". Ten batches
+ * at site 15 went that way in two days, nearly all of them released straight
+ * after the one before.
+ *
+ * A printer that is switched off or unplugged does not look like this. The
+ * connection is refused or the network reports it lost, and that still fails
+ * within seconds. Silence on a live connection means busy, so the relay waits.
+ */
+const IDLE_MS = Math.max(5, Number(arg('idle-seconds') || saved.idleSeconds || 1800)) * 1000
+const CONNECT_MS = 20000
+// How often a waiting send looks up for a Stop and refreshes its claim. Well inside the app's five minutes.
+const WATCH_MS = Math.min(30000, Math.max(1000, IDLE_MS / 4))
+
+function sendTcp(zpl, t = target, signal) {
   return new Promise((resolve, reject) => {
+    const where = `${t.host}:${t.port}`
+    let settled = false
+    const finish = err => {
+      if (settled) return
+      settled = true
+      clearTimeout(connecting)
+      if (signal) signal.removeEventListener('abort', onAbort)
+      err ? reject(err) : resolve()
+    }
     const sock = net.connect({ host: t.host, port: t.port })
-    sock.setTimeout(120000)
-    sock.on('error', reject)
+    // Not reaching it at all is a different thing from it being busy, and is said so quickly.
+    const connecting = setTimeout(() => {
+      sock.destroy()
+      finish(new Error(`Could not reach the printer at ${where} - is it on, and on the network?`))
+    }, CONNECT_MS)
+    const onAbort = () => {
+      sock.destroy()
+      finish(new Error('stopped'))
+    }
+    if (signal) signal.addEventListener('abort', onAbort)
+    sock.setTimeout(IDLE_MS)
+    sock.on('error', e => finish(e))
     sock.on('timeout', () => {
       sock.destroy()
-      reject(new Error(`Timed out talking to ${t.host}:${t.port}`))
+      finish(new Error(`The printer at ${where} took no data for ${Math.round(IDLE_MS / 60000)} minutes. Part of this batch may not have printed - check the last label that came out before retrying.`))
     })
     // One socket for the whole job, and end() only once the write has drained -
-    // a printer takes data far slower than a socket will accept it.
-    sock.on('connect', () => sock.write(zpl, () => sock.end()))
-    sock.on('close', () => resolve())
+    // a printer takes data far slower than a socket will accept it. end() is a
+    // clean close: everything written is delivered first, however long it takes.
+    sock.on('connect', () => {
+      clearTimeout(connecting)
+      sock.write(zpl, () => sock.end())
+    })
+    sock.on('close', () => finish())
   })
 }
 
@@ -461,7 +526,7 @@ async function listPrinters() {
   }
 }
 
-const send = (zpl, t = target) => (t.mode === 'network' ? sendTcp(zpl, t) : sendWindowsRaw(zpl, t))
+const send = (zpl, t = target, signal) => (t.mode === 'network' ? sendTcp(zpl, t, signal) : sendWindowsRaw(zpl, t))
 
 /* ---------------- setup page ---------------- */
 

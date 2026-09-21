@@ -127,6 +127,17 @@ npm run user -- <name> <password> [scanner|admin]
   **Windows Mobile gateway** (`wmGateway`, opt-in by port): it forwards `/wm`
   and nothing else, because an MC92N0 cannot do TLS 1.2 and cannot reach the
   app any other way. It must never accept ZPL or expose the setup page.
+- **The relay waits for a busy printer; it never hangs up on one.** A Zebra
+  with a full buffer stops reading until the batch ahead has printed, which
+  for 500 labels is longer than the two minutes `sendTcp` used to allow. The
+  relay destroyed the socket, a destroyed socket discards what was not yet
+  delivered, and the tail of the batch never printed - ten batches at site 15
+  in two days, each marked only "Timed out". Silence on a live connection
+  means busy: the idle limit is 30 minutes (`--idle-seconds`), the close is
+  always `end()`, never `destroy()` on a healthy send, and a printer that is
+  off or unplugged still fails in seconds because that is a refused or lost
+  connection, not silence. While it waits the relay refreshes its claim and a
+  Stop drops the connection.
 - **A batch run does not print a label twice without being told to.**
   `sentBefore` finds the codes already in a job that printed or is going to
   (held, queued, printing, done; thirty days), the Print card asks and leaves

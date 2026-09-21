@@ -245,6 +245,20 @@ works for network printers, not ones reached through a Windows queue. With
 pacing on, each check refreshes `claimed_at`, so a paced batch outlasting
 `STALE_MINUTES` is not re-queued to another relay.
 
+**Removing the pacing exposed a worse bug, fixed 21 Sep 2026.** `sendTcp`
+had a two-minute idle timeout ending in `sock.destroy()`. Paced, no send was
+ever idle that long. Unpaced, a batch released while the one before was still
+printing met a printer with a full buffer that read nothing for minutes; the
+relay destroyed the socket, the undelivered tail was discarded, and the job
+said "Timed out talking to ...". Ten 500-label batches at site 15 failed that
+way, every one after exactly 120 s, and the floor found out as gaps in the
+stacks (C25-11A01 to C25-12I01 was the first reported). Now: 30-minute idle
+limit, a separate 20 s limit on connecting, clean `end()` always, the claim
+refreshed every 30 s while waiting, and Stop aborts the wait.
+`basis_files/e2e-busy.mjs` plays a printer that goes deaf mid-batch. Still
+open: the *app* cannot say which labels of a failed batch printed. `~HS`
+would tell us; nobody has built it.
+
 **One relay, three printers (20 Sep 2026).** Batch, second batch, reprint.
 `print_jobs.kind` is `batch | batch2 | reprint` (`jobKind` in
 `src/lib/printq.ts` is the one place that decides), and the relay's

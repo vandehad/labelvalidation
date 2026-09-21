@@ -211,6 +211,16 @@ the relay claims it, and once a batch is in the printer's buffer nothing on
 our side can pull it back. Untick *Hold the batches* to send a run straight
 through.
 
+**A busy printer is waited for.** Release a second batch while the first is
+still printing and the printer's memory is full, so it stops taking data until
+it has caught up - the same if it is paused or out of labels. The relay waits,
+for up to half an hour, and the batch goes in whole when the printer comes
+back. (It used to give up after two minutes, which cut off the end of the
+batch and marked the job "Timed out".) A job that does fail this way now says
+that part of the batch may not have printed: find the last label that came
+out and print from there with a range, rather than pressing Retry, which sends
+all 500 again. A printer that is switched off still fails within seconds.
+
 **A batch prints without a break, and the place to stop a run is between
 batches.** The relay sends a batch to the printer in pieces of 50, one straight
 after another, so the printer never stands idle mid-batch. A Zebra takes a
