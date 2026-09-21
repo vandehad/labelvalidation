@@ -127,6 +127,16 @@ npm run user -- <name> <password> [scanner|admin]
   **Windows Mobile gateway** (`wmGateway`, opt-in by port): it forwards `/wm`
   and nothing else, because an MC92N0 cannot do TLS 1.2 and cannot reach the
   app any other way. It must never accept ZPL or expose the setup page.
+- **Nothing polls the database without a reason to.** Neon bills for every
+  hour the database is awake and it only sleeps after five minutes of no
+  queries at all. On 21 Sep 2026 the account ran out of quota and the floor
+  stopped - scanning, not just printing - because the relays polled every few
+  seconds all night (one loop per printer made it three times worse) and every
+  open browser tab polled too. So: the relay makes **one** request for all its
+  free printers, slows to 15 s when idle, and at night checks every 6 minutes
+  (`restDelay`); every timer in `Station.tsx` goes through `everyWhileVisible`
+  and stands still in a hidden tab. Do not add a bare `setInterval` that
+  queries, and do not give the relay a second polling loop.
 - **The relay waits for a busy printer; it never hangs up on one.** A Zebra
   with a full buffer stops reading until the batch ahead has printed, which
   for 500 labels is longer than the two minutes `sendTcp` used to allow. The

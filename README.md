@@ -211,6 +211,16 @@ the relay claims it, and once a batch is in the printer's buffer nothing on
 our side can pull it back. Untick *Hold the batches* to send a run straight
 through.
 
+**The relay rests when there is nothing to print.** It checks for work every
+couple of seconds while a run is going, every 15 seconds when it has been
+quiet for half an hour, and overnight (8 pm to 5 am, after two idle hours)
+every 6 minutes - that last gap is what lets the database go to sleep, and a
+database that never sleeps uses up its monthly allowance. A resting relay
+shows as *offline* on the Admin tab between checks; it is not. A job queued
+overnight starts at the relay's next check, or at once if you press **Check
+for jobs now** in the relay window. The Print card pokes a relay on the same
+PC by itself whenever it queues or releases a batch.
+
 **A busy printer is waited for.** Release a second batch while the first is
 still printing and the printer's memory is full, so it stops taking data until
 it has caught up - the same if it is paused or out of labels. The relay waits,

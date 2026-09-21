@@ -245,6 +245,24 @@ works for network printers, not ones reached through a Windows queue. With
 pacing on, each check refreshes `claimed_at`, so a paced batch outlasting
 `STALE_MINUTES` is not re-queued to another relay.
 
+**The database ran out of quota on 21 Sep 2026 and everything stopped.** Neon
+answered every query with HTTP 402 "exceeded the quota" - login, scanning,
+printing, all of it, at both sites. Compute time is the likely one: Neon
+counts every hour the database is awake, it sleeps only after five minutes
+with no query, and the relays had polled `/api/print/next` (four queries a
+poll) every 2-5 seconds since they were first switched on, three loops each
+after the per-printer change. Open browser tabs polled as well. Fixed on our
+side: one poll per relay for all its printers, an idle rest of 15 s, a night
+rest of 6 minutes, `/wake` and a "Check for jobs now" button to cut a rest
+short, and every `Station.tsx` timer paused in a hidden tab. **Not fixed, and
+not ours to fix from the code: the plan.** A warehouse scanning ten hours a
+day keeps the database awake for those hours whatever the relays do; whether
+that fits the free allowance is a question for the Neon usage page. If the
+quota that ran out was storage rather than compute, the first place to look is
+`print_jobs.zpl` - every batch keeps its full ZPL for ever, and only a failed
+job ever needs it again. That could not be measured at the time: the database
+was refusing every query, including that one.
+
 **Removing the pacing exposed a worse bug, fixed 21 Sep 2026.** `sendTcp`
 had a two-minute idle timeout ending in `sock.destroy()`. Paced, no send was
 ever idle that long. Unpaced, a batch released while the one before was still

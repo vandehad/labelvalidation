@@ -135,7 +135,8 @@ const describeAll = () =>
 
 // 4: a loop per printer, and a second batch printer.
 // 5: waits for a busy printer instead of hanging up on it after two minutes.
-const VERSION = '5'
+// 6: one poll for all printers, and it rests when idle, so the database can sleep.
+const VERSION = '6'
 
 /**
  * Labels per piece. A job goes to the printer in pieces this size, and the
@@ -284,18 +285,22 @@ async function sendJob(job) {
   return { stopped: false, sent }
 }
 
-/** One poll: take the next job of these kinds for this site, print it, report back. */
-async function pollOnce(kinds) {
-  // An app older than this relay ignores `kinds` and may hand any loop any
-  // job. That is harmless: the job still goes to the printer its kind names.
+/** One request: the next job of these kinds for this site, or null. */
+async function claim(kinds) {
+  // An app older than this relay ignores `kinds` and may hand back any job.
+  // That is harmless: the job still goes to the printer its kind names.
   const q =
     '?relay=' + encodeURIComponent(link.name) + '&site=' + link.site +
     '&target=' + encodeURIComponent(describeAll()) + '&v=' + VERSION + '&kinds=' + kinds.join(',')
   const r = await appFetch('/api/print/next' + q)
-  if (r.status === 204) return false
+  if (r.status === 204) return null
   const job = await r.json().catch(() => ({}))
   if (!r.ok) throw new Error(job.error || 'The app returned ' + r.status)
+  return job
+}
 
+/** Print a claimed job and report back. */
+async function printJob(job) {
   let ok = true
   let error = ''
   let stopped = false
@@ -328,45 +333,86 @@ async function pollOnce(kinds) {
   return true
 }
 
-const loops = Object.fromEntries(WORKERS.map(w => [w, { timer: null, busy: false }]))
-/** Start, or nudge, every printer's loop. Safe to call at any time. */
-const pollLoop = () => WORKERS.forEach(w => void workerLoop(w))
-async function workerLoop(w) {
-  const me = loops[w]
-  // Mid-job already: it reschedules itself when the job is done. A second
-  // chain here would be two loops feeding one printer.
-  if (me.busy) return
-  clearTimeout(me.timer)
-  me.busy = true
+/**
+ * One poll for the whole relay, however many printers it has.
+ *
+ * Every poll is a request to the app and four queries to its database, and a
+ * serverless Postgres is billed for every hour it is kept awake. A loop per
+ * printer polling every few seconds, from every relay, all night, kept it
+ * awake for the whole month and ran the account out of quota on 21 Sep 2026 -
+ * which stopped the scanning, not just the printing. So:
+ *
+ *  - one request asks for the kinds of every printer that is free, and the
+ *    job that comes back is handed to its printer's worker. The printers
+ *    still run side by side; only the asking is shared.
+ *  - it slows down when there is nothing to do: every 2 s for two minutes
+ *    after a job, 5 s for half an hour, then 15 s.
+ *  - at night (20:00-05:00 on this PC's clock) after two idle hours it checks
+ *    every 6 minutes. That gap is what lets the database go to sleep - it
+ *    needs five minutes of nothing. A job queued then waits for the next
+ *    check unless someone presses "Check for jobs now" in this window or the
+ *    Print card on this PC pokes /wake, which it does whenever it queues or
+ *    releases. The app shows a resting relay as offline; it is not.
+ */
+const busy = Object.fromEntries(WORKERS.map(w => [w, false]))
+const workerFor = kind => WORKERS.find(w => kindsFor(w).includes(kind)) || 'first'
+const NIGHT_REST_MS = 6 * 60 * 1000
+function restDelay() {
+  const idle = Date.now() - queue.lastWork
+  if (idle < 120000) return 2000
+  if (idle < 30 * 60000) return 5000
+  const h = new Date().getHours()
+  if (idle > 2 * 3600000 && (h >= 20 || h < 5)) return NIGHT_REST_MS
+  return 15000
+}
+
+let pollTimer = null
+let polling = false
+/** Start, or nudge, the poller. Safe to call at any time. */
+async function pollLoop() {
+  if (polling) return
+  clearTimeout(pollTimer)
+  polling = true
   let delay = 5000
-  const kinds = kindsFor(w)
   if (!target.mode || !link.key || !link.site) {
     queue.state = 'off'
     queue.detail = !target.mode ? 'no printer chosen' : !link.key ? 'not connected to the app' : 'no site chosen'
-  } else if (!kinds.length) {
-    // This loop's printer is not set. Look again shortly in case it is.
   } else {
-    try {
-      const had = await pollOnce(kinds)
-      if (queue.state !== 'ok')
-        console.log(`  queue: connected to ${link.app} as "${link.name}" for ${link.siteName || 'site ' + link.site}`)
-      queue.state = 'ok'
-      queue.detail = ''
-      queue.lastPoll = Date.now()
-      if (had) queue.lastWork = Date.now()
-      // Straight back for the next one while there is work; every couple of
-      // seconds for a while after; then every five, which is as long as
-      // "Release next batch" should take to start printing.
-      delay = had ? 200 : Date.now() - queue.lastWork < 120000 ? 2000 : 5000
-    } catch (e) {
-      if (queue.detail !== e.message) console.error('  queue: ' + e.message)
-      queue.state = 'error'
-      queue.detail = e.message
-      delay = 10000
-    }
+    // Only for printers with nothing to do. A worker that finishes nudges this loop itself.
+    const kinds = [...new Set(WORKERS.filter(w => !busy[w]).flatMap(kindsFor))]
+    if (!kinds.length) delay = 1000
+    else
+      try {
+        const job = await claim(kinds)
+        if (queue.state !== 'ok')
+          console.log(`  queue: connected to ${link.app} as "${link.name}" for ${link.siteName || 'site ' + link.site}`)
+        queue.state = 'ok'
+        queue.detail = ''
+        queue.lastPoll = Date.now()
+        if (job) {
+          queue.lastWork = Date.now()
+          const w = workerFor(job.kind)
+          busy[w] = true
+          void printJob(job)
+            .catch(e => console.error(`  job #${job.id}: ${e.message}`))
+            .finally(() => {
+              busy[w] = false
+              queue.lastWork = Date.now()
+              void pollLoop()
+            })
+          delay = 200 // straight back: another printer may have work waiting too
+        } else delay = restDelay()
+      } catch (e) {
+        if (queue.detail !== e.message) console.error('  queue: ' + e.message)
+        queue.state = 'error'
+        queue.detail = e.message
+        // An app that is refusing everything is not helped by being asked faster.
+        delay = 30000
+      }
   }
-  me.busy = false
-  me.timer = setTimeout(() => void workerLoop(w), delay)
+  queue.nextPoll = Date.now() + delay
+  polling = false
+  pollTimer = setTimeout(() => void pollLoop(), delay)
 }
 
 const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -655,6 +701,7 @@ const PAGE = printers => `<!doctype html>
   </div>
   <button class="ghost" id="check">Check connection</button>
   <button id="connect">Save and print for this site</button>
+  <button class="ghost" id="wake">Check for jobs now</button>
   <div class="msg" id="qmsg"></div>
   <p id="qstat" style="margin-top:12px;font-weight:600"></p>
 </div>
@@ -743,6 +790,7 @@ const PAGE = printers => `<!doctype html>
    const [ok, d] = await post('/app', linkBody())
    qsay(ok ? 'ok' : 'bad', ok ? 'Printing for ' + d.site + '. Leave this running.' : (d.error || 'Could not save.'))
  }
+ $('wake').onclick = async () => { await post('/wake', {}); refreshStatus() }
  const rsync = () => { const m = $('rmode').value; $('rnet').hidden = m !== 'network'; $('rloc').hidden = m !== 'local' }
  $('rmode').onchange = rsync; rsync()
  const rsay = (k, t) => { $('rmsg').className = 'msg ' + k; $('rmsg').textContent = t }
@@ -780,6 +828,7 @@ const PAGE = printers => `<!doctype html>
        q.state === 'ok' ? 'Queue: printing for ' + (q.siteName || 'site ' + q.site) + ' as "' + q.name + '" · polled ' + ago(q.lastPoll) + ' · ' + q.printed + ' label(s) this session'
        : q.state === 'error' ? 'Queue: ' + q.detail
        : 'Queue: not running - ' + q.detail
+     if (q.state === 'ok' && q.nextPoll - Date.now() > 60000) t += ' · resting overnight, next check in ' + Math.ceil((q.nextPoll - Date.now()) / 60000) + ' min (press Check for jobs now to look sooner)'
      if (q.lastJob) t += ' · last job #' + q.lastJob.id + (q.lastJob.ok ? ' printed' : ' FAILED: ' + q.lastJob.error)
      $('qstat').textContent = t
      $('qstat').style.color = q.state === 'ok' ? 'var(--ok)' : q.state === 'error' ? 'var(--bad)' : 'var(--muted)'
@@ -1053,6 +1102,13 @@ const server = http.createServer(async (req, res) => {
       queue.detail = ''
       void pollLoop()
       return void json(res, 200, { ok: true, site: found.name })
+    }
+
+    // Cuts a rest short. Harmless to anyone: all it does is ask the app for work now.
+    if (req.method === 'POST' && url === '/wake') {
+      queue.lastWork = Date.now()
+      void pollLoop()
+      return void json(res, 200, { ok: true })
     }
 
     if (req.method === 'POST' && url === '/target-batch2') {

@@ -22,6 +22,26 @@ import { readTable, parseDelimited } from '@/lib/sheet'
 import { zplBatch, barcodeData, type LabelSpec, type Symbology } from '@/lib/zpl'
 import type { Job as PrintJob, JobKind, RelaySeen } from '@/lib/printq'
 
+/**
+ * A timer that stands still while the tab is hidden, and catches up the moment
+ * it is looked at again. Every tick here is a query, and the database is billed
+ * for each hour it is kept awake: a tab left open on a PC nobody is sitting at
+ * kept it awake all night, and with the relays doing the same the account ran
+ * out of quota on 21 Sep 2026 and the whole floor stopped. Use this for every
+ * poll on this page; a bare setInterval brings that back.
+ */
+function everyWhileVisible(fn: () => void, ms: number): () => void {
+  const tick = () => {
+    if (document.visibilityState === 'visible') fn()
+  }
+  const t = setInterval(tick, ms)
+  document.addEventListener('visibilitychange', tick)
+  return () => {
+    clearInterval(t)
+    document.removeEventListener('visibilitychange', tick)
+  }
+}
+
 const PRINTER_NAME: Record<JobKind, string> = { batch: 'batch printer', batch2: 'second batch printer', reprint: 'reprint printer' }
 import { describeReplaced } from '@/lib/repair'
 import { CONFIRM_HINT } from '@/lib/pairguard'
@@ -349,8 +369,8 @@ function Scan({ siteId, user }: { siteId: number; user: User }) {
 
   useEffect(() => {
     void refresh()
-    const t = setInterval(refresh, 10000) // see other scanners' progress
-    return () => clearInterval(t)
+    const t = everyWhileVisible(refresh, 10000) // see other scanners' progress
+    return t
   }, [refresh])
 
   const flash = (kind: string, text: string) => {
@@ -1052,11 +1072,11 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
   // only when the card first opens.
   useEffect(() => {
     void load()
-    const t = setInterval(() => void load(), 30000)
+    const t = everyWhileVisible(() => void load(), 30000)
     const onFocus = () => void load()
     window.addEventListener('focus', onFocus)
     return () => {
-      clearInterval(t)
+      t()
       window.removeEventListener('focus', onFocus)
     }
   }, [load])
@@ -1073,8 +1093,8 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
 
   useEffect(() => {
     void loadQueue()
-    const t = setInterval(() => void loadQueue(), 4000)
-    return () => clearInterval(t)
+    const t = everyWhileVisible(() => void loadQueue(), 4000)
+    return t
   }, [loadQueue])
 
   const jobAction = async (id: number, what: 'cancel' | 'retry' | 'release') => {
@@ -1090,9 +1110,18 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
     }
   }
 
+  // A relay rests between checks when it has had nothing to do, overnight for
+  // minutes at a time, so that the database can sleep. If there is one on this
+  // PC, poke it: it looks for work now instead of at its next check. Best
+  // effort - a relay on another PC cannot be reached from here and finds the
+  // job at its own next check.
+  const wakeLocal = () => {
+    fetch(relay.replace(/\/$/, '') + '/wake', { method: 'POST', mode: 'no-cors' }).catch(() => {})
+  }
   const runAction = async (action: 'release-next' | 'cancel-held', kind: JobKind) => {
     try {
       const r = await api('/api/print', { method: 'PATCH', body: JSON.stringify({ siteId, action, kind }) })
+      if (action === 'release-next') wakeLocal()
       if (action === 'cancel-held') setMsg({ kind: 'ok', text: `Cancelled ${r.cancelled} held batch(es). Nothing of them reached a printer.` })
       await loadQueue()
     } catch (e) {
@@ -1238,6 +1267,7 @@ function Print({ siteId, limited = false }: { siteId: number; limited?: boolean 
         online = r.online
         n++
       }
+      wakeLocal()
       const total = (sending.length * spec.copies).toLocaleString()
       setMsg(
         holding
@@ -1651,8 +1681,8 @@ function Summary({ siteId }: { siteId: number }) {
   }, [siteId])
   useEffect(() => {
     void load()
-    const t = setInterval(() => void load(), 30000)
-    return () => clearInterval(t)
+    const t = everyWhileVisible(() => void load(), 30000)
+    return t
   }, [load])
 
   if (err) return <div className="msg show bad">{err}</div>
@@ -2039,8 +2069,8 @@ function Validate({ siteId, siteName, user }: { siteId: number; siteName: string
 
   useEffect(() => {
     void refresh()
-    const t = setInterval(refresh, 10000)
-    return () => clearInterval(t)
+    const t = everyWhileVisible(refresh, 10000)
+    return t
   }, [refresh])
 
   const flash = (kind: string, text: string, sub?: string) => {
@@ -3027,8 +3057,8 @@ function RelayCard() {
 
   useEffect(() => {
     void load()
-    const t = setInterval(() => void load(), 5000)
-    return () => clearInterval(t)
+    const t = everyWhileVisible(() => void load(), 5000)
+    return t
   }, [load])
 
   const rotate = async () => {
