@@ -34,6 +34,7 @@ import {
 } from '../src/lib/zpl.ts'
 import { debounceCode } from '../src/lib/camera.ts'
 import { parseBearer, relayName, chunkCodes, newRelayKey, sameKey, jobKind, parseKinds, describeRepeat } from '../src/lib/printq.ts'
+import { toteCode } from '../src/lib/totes.ts'
 import { canonOld, cleanOldBins, suggestOldBin, looksLikeWmsBin } from '../src/lib/oldbins.ts'
 import { oldAisle, aisleWarning } from '../src/lib/pairguard.ts'
 import { looksLikeUpc } from '../src/lib/bins.ts'
@@ -687,6 +688,15 @@ ok('xlsx reads back a value', back[1][0] === 'A-1-1-2')
 ok('xlsx unescapes markup', back.some(r => r[3] === 'quote " & <tag>'))
 const mapped = parseMapTable(back)
 ok('a written workbook parses as a bin map', mapped.header === true && mapped.rows.length === 200)
+
+/* ---------- tote capture ---------- */
+
+ok('a scanned tote is what follows the last space, uppercased', toteCode('PICK  int00001') === 'INT00001')
+ok('a barcode with no padding space is kept whole', toteCode('STGWALSTG00001') === 'STGWALSTG00001')
+ok('surrounding space is trimmed', toteCode('  TOTE-9  ') === 'TOTE-9')
+ok('nothing scanned is nothing captured', toteCode('') === '' && toteCode(null) === '' && toteCode(undefined) === '')
+ok('a vendor code keeps its own shape - a tote is not a bin and is not parsed', toteCode('t/1234.56-a') === 'T/1234.56-A')
+ok('an absurd scan is cut to what the column holds', toteCode('X'.repeat(200)).length === 64)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

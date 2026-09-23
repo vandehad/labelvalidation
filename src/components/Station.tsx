@@ -198,7 +198,7 @@ function Login({ onIn }: { onIn: (u: User) => void }) {
 /* ------------------------------------------------------------------ */
 
 function Main({ user, onOut }: { user: User; onOut: () => void }) {
-  const [tab, setTab] = useState<'scan' | 'val' | 'labels' | 'rec' | 'summary' | 'admin'>('scan')
+  const [tab, setTab] = useState<'scan' | 'val' | 'labels' | 'totes' | 'rec' | 'summary' | 'admin'>('scan')
   const [sites, setSites] = useState<Site[]>([])
   const [siteId, setSiteId] = useState<number | null>(null)
   const [err, setErr] = useState('')
@@ -294,6 +294,9 @@ function Main({ user, onOut }: { user: User; onOut: () => void }) {
         <button className={tab === 'labels' ? 'on' : ''} onClick={() => setTab('labels')}>
           Labels
         </button>
+        <button className={tab === 'totes' ? 'on' : ''} onClick={() => setTab('totes')}>
+          Tote Capture
+        </button>
         <button className={tab === 'rec' ? 'on' : ''} onClick={() => setTab('rec')}>
           Reconcile
         </button>
@@ -324,6 +327,8 @@ function Main({ user, onOut }: { user: User; onOut: () => void }) {
           <Validate siteId={siteId} siteName={sites.find(s => s.id === siteId)?.name ?? ''} user={user} />
         ) : tab === 'labels' ? (
           <Labels siteId={siteId} user={user} stored={sites.find(s => s.id === siteId)?.labels ?? 0} onDone={loadSites} />
+        ) : tab === 'totes' ? (
+          <ToteCapture siteId={siteId} />
         ) : tab === 'summary' ? (
           <Summary siteId={siteId} />
         ) : (
@@ -1668,6 +1673,175 @@ function Share({ part, whole, label }: { part: number; whole: number; label?: st
  * and every chart has its table underneath - the bars are for the glance,
  * the table is for the answer.
  */
+type Tote = { id: number; code: string; note: string | null; username: string | null; created_at: string }
+
+/**
+ * Tote Capture: a list of label numbers and nothing else.
+ *
+ * Not pairing and not validation - no lookup, no comparison, no verdict. A
+ * tote label is whatever the vendor printed on it, so the shape is not
+ * policed. The one thing it will not do is list the same tote twice: a repeat
+ * says so and leaves the count alone, because a second pass down the same rack
+ * must not double the list.
+ */
+function ToteCapture({ siteId }: { siteId: number }) {
+  const [totes, setTotes] = useState<Tote[]>([])
+  const [total, setTotal] = useState(0)
+  const [code, setCode] = useState('')
+  const [note, setNote] = useState('')
+  const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const box = useRef<HTMLInputElement>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api(`/api/totes?site=${siteId}`)
+      setTotes(d.totes)
+      setTotal(d.total)
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    }
+  }, [siteId])
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const capture = async () => {
+    const raw = code.trim()
+    if (!raw || busy) return
+    setBusy(true)
+    try {
+      const d = await api('/api/totes', {
+        method: 'POST',
+        body: JSON.stringify({ siteId, code: raw, note: note.trim() || undefined }),
+      })
+      setMsg(
+        d.duplicate
+          ? {
+              kind: 'warn',
+              text: `${d.tote.code} is already on the list, captured ${new Date(d.tote.created_at).toLocaleString()}${d.tote.username ? ' by ' + d.tote.username : ''}. Nothing added.`,
+            }
+          : { kind: 'ok', text: `${d.tote.code} captured. ${d.total.toLocaleString()} on the list.` },
+      )
+      setCode('')
+      await load()
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setBusy(false)
+      box.current?.focus()
+    }
+  }
+
+  const drop = async (t: Tote) => {
+    if (!confirm(`Remove ${t.code} from the list?`)) return
+    try {
+      await api(`/api/totes?site=${siteId}&id=${t.id}`, { method: 'DELETE' })
+      setMsg({ kind: 'ok', text: `${t.code} removed.` })
+      await load()
+    } catch (e) {
+      setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Tote Capture</h2>
+      <p className="hint">
+        Scan a tote label and it goes on the list. Nothing is looked up and nothing is refused - this is a
+        record of which totes exist, not a pairing. Scanning one that is on the list already says so and
+        changes nothing.
+      </p>
+
+      <div className="row" style={{ marginTop: 12, alignItems: 'flex-end' }}>
+        <div style={{ flex: '1 1 320px' }}>
+          <label>Tote label</label>
+          <input
+            ref={box}
+            value={code}
+            autoFocus
+            onChange={e => setCode(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                void capture()
+              }
+            }}
+            placeholder="scan here"
+            style={{ textTransform: 'uppercase', fontSize: 18 }}
+            disabled={busy}
+          />
+        </div>
+        <div style={{ flex: '1 1 220px' }}>
+          <label>Note (optional, kept for the next scan)</label>
+          <input value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. returns cage 3" />
+        </div>
+        <button className="act" onClick={() => void capture()} disabled={busy || !code.trim()}>
+          Capture
+        </button>
+        {busy && <span className="spin" />}
+      </div>
+
+      {msg && (
+        <div className={`msg show ${msg.kind}`} style={{ marginTop: 10 }}>
+          {msg.text}
+        </div>
+      )}
+
+      <div className="stats" style={{ marginTop: 12 }}>
+        <Stat n={total.toLocaleString()} l="totes captured" />
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+        <a className="act ghost" href={`/api/totes?site=${siteId}&csv=1`}>
+          Download the list (CSV)
+        </a>
+        <button className="act ghost" onClick={() => void load()}>
+          Refresh
+        </button>
+      </div>
+
+      {totes.length > 0 && (
+        <div className="scroll" style={{ marginTop: 12, maxHeight: 420 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Tote</th>
+                <th>Note</th>
+                <th>Who</th>
+                <th>When</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {totes.map(t => (
+                <tr key={t.id}>
+                  <td>
+                    <code>{t.code}</code>
+                  </td>
+                  <td>{t.note ?? ''}</td>
+                  <td>{t.username ?? ''}</td>
+                  <td>{new Date(t.created_at).toLocaleString()}</td>
+                  <td>
+                    <button className="act ghost" onClick={() => void drop(t)}>
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {total > totes.length && (
+            <p className="hint">
+              Newest {totes.length} shown; the download has all {total.toLocaleString()}.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function Summary({ siteId }: { siteId: number }) {
   const [d, setD] = useState<SummaryData | null>(null)
   const [err, setErr] = useState('')

@@ -97,6 +97,22 @@ const steps = [
     )`,
   ],
   ['checks by site', `CREATE INDEX IF NOT EXISTS checks_site_idx ON checks (site_id, source, created_at DESC)`],
+  [
+    // Tote capture: a plain list of label numbers per site. Not bins, so
+    // nothing references labels or pairs - the unique key is the whole point,
+    // because a second pass over the same shelf must not double the list.
+    'totes',
+    `CREATE TABLE IF NOT EXISTS totes (
+      id         serial PRIMARY KEY,
+      site_id    integer NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+      code       text NOT NULL,
+      note       text,
+      user_id    integer REFERENCES users(id),
+      created_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT totes_code_unique UNIQUE (site_id, code)
+    )`,
+  ],
+  ['totes by site', `CREATE INDEX IF NOT EXISTS totes_site_idx ON totes (site_id, id DESC)`],
   ['checks by verdict', `CREATE INDEX IF NOT EXISTS checks_verdict_idx ON checks (site_id, source, verdict)`],
 
   // ---- bins added during the conversion --------------------------------

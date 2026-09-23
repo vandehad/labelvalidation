@@ -155,6 +155,14 @@ npm run user -- <name> <password> [scanner|admin]
   ask - `allowRepeat` is the deliberate way through, and a `reprint` is never
   checked. The zone buttons toggle: at site 15 "zone C" went to the second
   printer with B still lit, and 500 B labels came out twice.
+- **Tote Capture records, it never judges.** `totes` is a flat list of label
+  numbers per site - no reference to `labels` or `pairs`, no format gate, no
+  verdict. A tote label is a vendor's, not ours. `UNIQUE (site_id, code)` is
+  the point of the table: `captureTote` inserts `ON CONFLICT DO NOTHING` and
+  reports the *first* capture, so a second pass down a rack says "already on
+  the list" instead of doubling it. `toteCode` applies the same two boundary
+  rules as every other scan surface - after the last space, uppercased - and
+  nothing else.
 - **`@zxing/*` is reached only through the dynamic import in
   `src/lib/camera.ts`.** It is the phone-camera fallback for browsers without
   `BarcodeDetector`. A static import anywhere would put a 450 KB decoder into

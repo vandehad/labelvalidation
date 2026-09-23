@@ -245,6 +245,16 @@ works for network printers, not ones reached through a Windows queue. With
 pacing on, each check refreshes `claimed_at`, so a paced batch outlasting
 `STALE_MINUTES` is not re-queued to another relay.
 
+**Tote Capture (23 Sep 2026)** is a tab, `totes`, `src/lib/totes.ts` and
+`/api/totes`. It captures a list of label numbers per site and does nothing
+else - no lookup against `labels`, no pairing, no format gate, because a tote
+label belongs to whoever printed it. The unique key on `(site_id, code)` is
+the whole design: a repeat scan is answered with the original capture rather
+than a second row. What is not built, because nobody has asked: it is not on
+`/scan` or `/wm`, so capture is a desktop job with a wedge scanner today; and
+nothing consumes the list - it comes out as CSV and stops there.
+`basis_files/e2e-totes.mjs` covers it end to end on a throwaway site.
+
 **The database ran out of quota on 21 Sep 2026 and everything stopped.** Neon
 answered every query with HTTP 402 "exceeded the quota" - login, scanning,
 printing, all of it, at both sites. Compute time is the likely one: Neon

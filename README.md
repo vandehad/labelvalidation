@@ -84,6 +84,23 @@ integration has provisioned anything.
    one-for-one.
 5. **Export** the workbook: cross-reference, unused, unexpected, summary.
 
+## Tote Capture
+
+A list of label numbers, and nothing else. Scan a tote and it goes on the
+list; the tab shows the count, the newest scans and a CSV of the lot.
+
+It is deliberately not pairing and not validation: nothing is looked up,
+nothing is compared, and no shape is enforced, because a tote label is
+whatever the vendor printed on it. The one thing it will not do is list the
+same tote twice - a repeat scan says when it was first captured and by whom,
+and leaves the count alone, so a second pass down the same rack cannot double
+the list. A mis-scan is removed from the row it is on.
+
+The list is per site, so the same tote number captured at two sites is two
+captures. A scan is read the way every other scan in the app is read: what
+follows the last space, uppercased - so `PICK  INT00042` is captured as
+`INT00042`, while a barcode with no padding space is kept whole.
+
 ## Generating and printing a batch
 
 The **Labels** tab builds the set from an old bin list, or from **zone
