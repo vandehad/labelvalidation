@@ -1706,9 +1706,17 @@ function ToteCapture({ siteId }: { siteId: number }) {
     void load()
   }, [load])
 
+  const saving = useRef(false)
   const capture = async () => {
     const raw = code.trim()
-    if (!raw || busy) return
+    if (!raw) return
+    // A scan that lands mid-save is left in the field and said out loud -
+    // never swallowed, because the operator would walk on believing it counted.
+    if (saving.current) {
+      setMsg({ kind: 'warn', text: 'Still saving the one before. Press Enter again - the scan is still in the box.' })
+      return
+    }
+    saving.current = true
     setBusy(true)
     try {
       const d = await api('/api/totes', {
@@ -1723,11 +1731,12 @@ function ToteCapture({ siteId }: { siteId: number }) {
             }
           : { kind: 'ok', text: `${d.tote.code} captured. ${d.total.toLocaleString()} on the list.` },
       )
-      setCode('')
+      setCode(cur => (cur.trim() === raw ? '' : cur))
       await load()
     } catch (e) {
       setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
     } finally {
+      saving.current = false
       setBusy(false)
       box.current?.focus()
     }
@@ -1769,7 +1778,6 @@ function ToteCapture({ siteId }: { siteId: number }) {
             }}
             placeholder="scan here"
             style={{ textTransform: 'uppercase', fontSize: 18 }}
-            disabled={busy}
           />
         </div>
         <div style={{ flex: '1 1 220px' }}>

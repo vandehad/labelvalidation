@@ -96,6 +96,10 @@ same tote twice - a repeat scan says when it was first captured and by whom,
 and leaves the count alone, so a second pass down the same rack cannot double
 the list. A mis-scan is removed from the row it is on.
 
+It is on the handheld too: on `/scan`, open the gear and pick **Tote
+Capture** under Job. One field, the same beep, and the tally counts what is
+on the list.
+
 The list is per site, so the same tote number captured at two sites is two
 captures. A scan is read the way every other scan in the app is read: what
 follows the last space, uppercased - so `PICK  INT00042` is captured as

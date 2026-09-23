@@ -49,7 +49,7 @@ import { CONFIRM_HINT } from '@/lib/pairguard'
 type User = { name: string; role: string }
 type Site = { id: number; name: string }
 type Source = 'map' | 'pairs'
-type Mode = 'pair' | 'validate'
+type Mode = 'pair' | 'validate' | 'tote'
 
 /** A refusal with its body attached: a held pair comes back with `needsConfirm` and the reasons. */
 class ApiError extends Error {
@@ -380,6 +380,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const [counts, setCounts] = useState({
     match: 0, mismatch: 0, unmapped: 0, checked: 0, reference: 0, // validate
     paired: 0, mine: 0, labels: 0, wms: 0, wmsPaired: 0, // pair
+    totes: 0, // tote capture
   })
   // Which panel sits under the verdict: the scan fields, the add-a-bin
   // picker, or the reprint field.
@@ -394,6 +395,10 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const [addInitial, setAddInitial] = useState<{ zone: string; aisle: number; col: number; letter: string } | null>(null)
   const [reBin, setReBin] = useState('')
   const reRef = useRef<HTMLInputElement>(null)
+  // Tote capture: one field, a list, and nothing looked up. See src/lib/totes.ts.
+  const [toteBin, setToteBin] = useState('')
+  const toteRef = useRef<HTMLInputElement>(null)
+  const capturing = useRef(false)
   // Keyboard mode, for a label too damaged to scan. inputMode flips to text
   // and the field is refocused inside the tap, which is what makes Android
   // raise the keyboard. Off again after the pair commits.
@@ -457,7 +462,10 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   const refresh = useCallback(async () => {
     if (!siteId) return
     try {
-      if (mode === 'pair') {
+      if (mode === 'tote') {
+        const d = await api(`/api/totes?site=${siteId}&limit=1`)
+        setCounts(c => ({ ...c, totes: d.total }))
+      } else if (mode === 'pair') {
         const d = await api(`/api/pairs?site=${siteId}&limit=1`)
         const mine = (d.byUser as Array<{ username: string; n: number }>).find(u => u.username === user.name)?.n ?? 0
         setCounts(c => ({ ...c, paired: d.totals.pairs, labels: d.totals.labels, mine, wms: d.totals.wms ?? 0, wmsPaired: d.totals.wms_paired ?? 0 }))
@@ -853,6 +861,45 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
   // the site does not hold is not refused - it opens Add-a-bin with the
   // code's zone, aisle, column and shelf already picked, because the usual
   // reason is a shelf that was never in the plan.
+  /**
+   * Tote capture. Nothing is looked up and nothing is refused for its shape -
+   * a tote label is whatever the vendor printed on it. A repeat says so in
+   * yellow and changes nothing, so a second pass down a rack cannot double
+   * the list. The field is never locked: a scan arriving mid-save lands in it
+   * rather than being swallowed, and only the code that was sent is cleared.
+   */
+  const captureTote = async (raw: string) => {
+    const scanned = normalizeScan(raw)
+    if (!scanned) return
+    // Said out loud, never swallowed - the same refusal the pairing fields give.
+    if (capturing.current) return refuseFast()
+    capturing.current = true
+    setBusy(true)
+    try {
+      const d = await api('/api/totes', { method: 'POST', body: JSON.stringify({ siteId, code: scanned }) })
+      setToteBin(cur => (normalizeScan(cur) === scanned ? '' : cur))
+      if (d.duplicate) {
+        setResult({
+          verdict: 'unmapped',
+          text: 'ALREADY ON THE LIST',
+          sub: `${d.tote.code} was captured ${new Date(d.tote.created_at).toLocaleString()}${d.tote.username ? ' by ' + d.tote.username : ''}. Nothing added.`,
+        })
+        feedback(false)
+      } else {
+        setResult({ verdict: 'match', text: 'CAPTURED', sub: `${d.tote.code} · ${d.total.toLocaleString()} on the list` })
+        feedback(true)
+      }
+      setCounts(c => ({ ...c, totes: d.total }))
+    } catch (e) {
+      setResult({ verdict: 'error', text: 'NOT CAPTURED', sub: e instanceof Error ? e.message : String(e) })
+      feedback(false)
+    } finally {
+      capturing.current = false
+      setBusy(false)
+      setTimeout(() => toteRef.current?.focus(), 0)
+    }
+  }
+
   const reprint = async (raw: string) => {
     const scanned = normalizeScan(raw)
     if (!scanned) return
@@ -926,7 +973,9 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
                 ? 'NO OLD LABEL'
                 : panel === 'unpair'
                   ? 'UNPAIR'
-                  : mode === 'pair'
+                  : mode === 'tote'
+                    ? 'TOTE CAPTURE'
+                    : mode === 'pair'
                   ? repair
                     ? 'REPAIR'
                     : 'SCAN & PAIR'
@@ -944,6 +993,7 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
           <select className="m-in" value={mode} onChange={e => setMode(e.target.value as Mode)}>
             <option value="pair">Scan &amp; Pair — hanging new labels</option>
             <option value="validate">Validate — spot-check what is hung</option>
+            <option value="tote">Tote Capture — a list of tote labels</option>
           </select>
           <label className="m-label">Site</label>
           <select className="m-in" value={siteId ?? ''} onChange={e => setSiteId(Number(e.target.value))}>
@@ -1073,6 +1123,40 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
             setTimeout(() => oldRef.current?.focus(), 0)
           }}
         />
+      ) : mode === 'tote' ? (
+        <div className="m-pad">
+          <label className="m-label">Scan a tote label</label>
+          <input
+            ref={toteRef}
+            className={`m-in scan ${toteBin ? 'armed' : ''}`}
+            value={toteBin}
+            onChange={e => setToteBin(e.target.value)}
+            onKeyDown={e => {
+              if (e.key !== 'Enter' && e.key !== 'Tab') return
+              e.preventDefault()
+              void captureTote(toteBin)
+            }}
+            onDoubleClick={() => typeInto(toteRef)}
+            inputMode={typing ? 'text' : 'none'}
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            placeholder="scan…"
+            autoFocus
+          />
+          <div className="m-row">
+            <button className={`m-btn ${typing ? '' : 'ghost'}`} onClick={() => (typing ? setTyping(false) : typeInto(toteRef))}>
+              {typing ? 'Keyboard off' : 'Type it'}
+            </button>
+            <button className="m-btn ghost" onClick={() => void captureTote(toteBin)} disabled={busy || !toteBin.trim()}>
+              Capture
+            </button>
+          </div>
+          <p className="m-label" style={{ textTransform: 'none', letterSpacing: 0, marginTop: 10 }}>
+            Nothing is looked up and nothing is refused - this is a record of which totes exist. Scanning one
+            that is on the list already says so and changes nothing.
+          </p>
+        </div>
       ) : panel === 'reprint' || panel === 'noold' || panel === 'unpair' ? (
         <div className="m-pad">
           <label className="m-label">
@@ -1252,7 +1336,14 @@ function Scanner({ user, onOut }: { user: User; onOut: () => void }) {
       </div>
       )}
 
-      {mode === 'pair' ? (
+      {mode === 'tote' ? (
+        <div className="m-tally">
+          <div>
+            <b>{counts.totes.toLocaleString()}</b>
+            <span>totes captured</span>
+          </div>
+        </div>
+      ) : mode === 'pair' ? (
         // Progress against the WMS list when one is loaded: the label set is
         // a superset, so "labels left" would never reach zero and means
         // nothing to the person in the aisle. WMS bins paired does.
