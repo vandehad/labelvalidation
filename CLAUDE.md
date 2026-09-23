@@ -162,7 +162,13 @@ npm run user -- <name> <password> [scanner|admin]
   reports the *first* capture, so a second pass down a rack says "already on
   the list" instead of doubling it. `toteCode` applies the same two boundary
   rules as every other scan surface - after the last space, uppercased - and
-  nothing else.
+  nothing else. It is on the desktop tab and on `/scan` under the gear.
+- **Never disable a field a scanner is aimed at.** A disabled input drops
+  focus and does not take it back when React re-enables it, so the wedge's
+  Enter left the cursor nowhere and the next scan went into the page. Hold off
+  re-entrancy with a ref, keep the field live (`readOnly` where a lock is
+  genuinely wanted, as on `/scan`), clear only the code that was sent so a
+  scan arriving mid-save is not wiped, and say that case out loud.
 - **`@zxing/*` is reached only through the dynamic import in
   `src/lib/camera.ts`.** It is the phone-camera fallback for browsers without
   `BarcodeDetector`. A static import anywhere would put a 450 KB decoder into
