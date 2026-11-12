@@ -3225,6 +3225,7 @@ function WmsUpload() {
 function RelayCard() {
   const [key, setKey] = useState<string | null>(null)
   const [relays, setRelays] = useState<RelaySeen[]>([])
+  const [exe, setExe] = useState<{ size: number; built: string } | null>(null)
   const [msg, setMsg] = useState<{ kind: string; text: string } | null>(null)
 
   const load = useCallback(async () => {
@@ -3232,6 +3233,7 @@ function RelayCard() {
       const d = await api('/api/print/key')
       setKey(d.key)
       setRelays(d.relays)
+      setExe(d.exe ?? null)
     } catch (e) {
       setMsg({ kind: 'bad', text: e instanceof Error ? e.message : String(e) })
     }
@@ -3269,6 +3271,18 @@ function RelayCard() {
         own relay and its own printer.
       </p>
       {msg && <div className={`msg show ${msg.kind}`}>{msg.text}</div>}
+      {exe && (
+        <p style={{ margin: '0 0 12px' }}>
+          {/* A plain link, not fetch: the route redirects to the file and the browser saves it. */}
+          <a href="/api/print/download" style={{ fontWeight: 600 }}>
+            Download print-server.exe
+          </a>{' '}
+          <span className="hint">
+            {Math.round(exe.size / 1024 / 1024)} MB, built {new Date(exe.built).toLocaleDateString()}. Windows will
+            warn that it is unrecognised: More info, then Run anyway.
+          </span>
+        </p>
+      )}
       <label>Relay key</label>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <code style={{ fontSize: 15, userSelect: 'all', padding: '6px 10px' }}>{key ?? '…'}</code>

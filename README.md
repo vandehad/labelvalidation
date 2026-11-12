@@ -175,6 +175,7 @@ prints the same way, and none of them has to know where the printer is.
 
 ```bash
 npm run build-exe        # produces dist/print-server.exe, ~88 MB
+npm run publish-exe      # uploads it, so Admin -> Print relays offers it as a download
 ```
 
 Copy that one file to the PC with the printer and double-click it. It opens its

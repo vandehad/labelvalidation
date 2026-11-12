@@ -15,10 +15,12 @@
     "user": "node scripts/create-user.mjs",
     "test": "node --experimental-strip-types scripts/test.ts",
     "print-server": "node scripts/print-server.cjs",
-    "build-exe": "node scripts/build-exe.mjs"
+    "build-exe": "node scripts/build-exe.mjs",
+    "publish-exe": "node scripts/publish-exe.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
+    "@vercel/blob": "^2.9.0",
     "@zxing/browser": "^0.2.1",
     "@zxing/library": "^0.23.0",
     "next": "^16.3.3",

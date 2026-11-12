@@ -35,6 +35,7 @@ import {
 import { debounceCode } from '../src/lib/camera.ts'
 import { parseBearer, relayName, chunkCodes, newRelayKey, sameKey, jobKind, parseKinds, describeRepeat } from '../src/lib/printq.ts'
 import { toteCode } from '../src/lib/totes.ts'
+import { pickBlobStoreId, parseRelayExe } from '../src/lib/relayexe.mjs'
 import { canonOld, cleanOldBins, suggestOldBin, looksLikeWmsBin } from '../src/lib/oldbins.ts'
 import { oldAisle, aisleWarning } from '../src/lib/pairguard.ts'
 import { looksLikeUpc } from '../src/lib/bins.ts'
@@ -697,6 +698,19 @@ ok('surrounding space is trimmed', toteCode('  TOTE-9  ') === 'TOTE-9')
 ok('nothing scanned is nothing captured', toteCode('') === '' && toteCode(null) === '' && toteCode(undefined) === '')
 ok('a vendor code keeps its own shape - a tote is not a bin and is not parsed', toteCode('t/1234.56-a') === 'T/1234.56-A')
 ok('an absurd scan is cut to what the column holds', toteCode('X'.repeat(200)).length === 64)
+
+/* ---------- relay download ---------- */
+
+ok('the store id is found under the prefix Vercel gave it', pickBlobStoreId({ LABELVAL_STORE_ID: 'store_NtAI9' }) === 'store_NtAI9')
+ok('a plain BLOB_STORE_ID wins', pickBlobStoreId({ BLOB_STORE_ID: 'store_A1', LABELVAL_STORE_ID: 'store_B2' }) === 'store_A1')
+ok('something that is not a store id is not taken for one', pickBlobStoreId({ OTHER_STORE_ID: 'shop-12' }) === null)
+ok('no store, no id', pickBlobStoreId({}) === null)
+{
+  const row = JSON.stringify({ pathname: 'relay/print-server.exe', size: 91890176, built: '2026-09-21T17:26:00.000Z', published: '2026-11-12T17:00:00.000Z' })
+  ok('a published exe reads back', parseRelayExe(row)?.size === 91890176 && parseRelayExe(row)?.pathname === 'relay/print-server.exe')
+  ok('nothing published is no link', parseRelayExe(undefined) === null && parseRelayExe('') === null)
+  ok('a row that is not an exe is no link', parseRelayExe('not json') === null && parseRelayExe('{"pathname":"x","size":0}') === null)
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
